@@ -24,11 +24,10 @@ PowerShell, xorriso, Limine boot files, and QEMU. The Makefile expects the
 cross-toolchain and Limine files in the paths configured near its top; override
 `PATH`, `LIMINE_DATA_DIR`, or `LIMINE_TOOL` for your environment as needed.
 
-From an MSYS2 UCRT64 shell with the tools installed:
+From an MSYS2 UCRT64 shell in the cloned RockOS directory:
 
 ```sh
 export PATH="/c/opt/x86_64-elf-tools/bin:$PATH"
-cd /c/Users/<you>/OneDrive/Documents/rockos
 make run
 ```
 
