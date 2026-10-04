@@ -128,13 +128,17 @@ $(DATA_DISK):
 $(INSTALL_DISK):
 	qemu-img create -f raw $@ 64M
 
+# Keep the install target first so reboot boots it; leave the CD as fallback.
 run: $(ISO_IMAGE) $(DATA_DISK) $(INSTALL_DISK)
-	qemu-system-x86_64 -machine pc -boot order=d -serial stdio \
+	qemu-system-x86_64 -machine pc -serial stdio \
 		-audiodev driver=dsound,id=audio0 \
 		-device AC97,audiodev=audio0 \
-		-drive file=$(ISO_IMAGE),format=raw,media=cdrom,if=ide,index=2,readonly=on \
-		-drive file=$(DATA_DISK),format=raw,if=ide,index=0 \
-		-drive file=$(INSTALL_DISK),format=raw,if=ide,index=1
+		-drive file=$(INSTALL_DISK),format=raw,if=none,id=target \
+		-device ide-hd,drive=target,bus=ide.0,unit=1,bootindex=1 \
+		-drive file=$(DATA_DISK),format=raw,if=none,id=data \
+		-device ide-hd,drive=data,bus=ide.0,unit=0,bootindex=2 \
+		-drive file=$(ISO_IMAGE),format=raw,media=cdrom,if=none,id=installcd,readonly=on \
+		-device ide-cd,drive=installcd,bus=ide.1,unit=0,bootindex=3
 
 run-installed: $(INSTALL_DISK) $(DATA_DISK)
 	qemu-system-x86_64 -machine pc -boot order=c \

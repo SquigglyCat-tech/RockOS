@@ -5,9 +5,16 @@
 #define SERIAL_COM1 0x3F8
 
 static void serial_write_char(char character) {
-    while (!(inb(SERIAL_COM1 + 5) & 0x20)) {
+    for (uint32_t poll = 0; poll < 100000; poll++) {
+        uint8_t line_status = inb(SERIAL_COM1 + 5);
+        if (line_status == 0 || line_status == 0xFF) {
+            return;
+        }
+        if (line_status & 0x20) {
+            outb(SERIAL_COM1, (uint8_t)character);
+            return;
+        }
     }
-    outb(SERIAL_COM1, (uint8_t)character);
 }
 
 void serial_init(void) {

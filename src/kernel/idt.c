@@ -8,8 +8,7 @@
 #include "keyboard.h"
 #include "mouse.h"
 #include "timer.h"
-#include "display.h"   /* if your display header has a different name, change ONLY this line */
-#include "audio.h"
+#include "display.h"
 #include "ring3.h"
 
 #define KERNEL_CS     0x08   /* must be the 64-bit code segment of the GDT your boot code loads */
@@ -72,7 +71,7 @@ void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags) {
     idt[num].zero = 0;
 }
 
-/* ---------- minimal exception screen (no printf in the kernel yet) ---------- */
+/* ---------- fatal exception screen ---------- */
 
 static void put_hex64(uint64_t v) {
     static const char digits[] = "0123456789ABCDEF";
@@ -91,9 +90,13 @@ static void put_line(const char* label, uint64_t v) {
 static void exception_panic(const interrupt_frame_t* f) {
     asm volatile ("cli");
 
-    display_set_color(COLOR_YELLOW, COLOR_BLACK);
-    display_puts("\n*** ROCKOS KERNEL EXCEPTION ***\n");
+    display_set_color(COLOR_WHITE, COLOR_BLUE);
+    display_clear();
+    display_puts("ROCKOS - FATAL SYSTEM ERROR\n");
+    display_puts("===========================\n\n");
+    display_puts("A fatal CPU exception stopped the kernel.\n");
 
+    display_set_color(COLOR_YELLOW, COLOR_BLUE);
     display_puts("Type:       ");
     if (f->vector < EXCEPTION_NAME_COUNT) {
         display_puts(exception_names[f->vector]);
@@ -120,8 +123,9 @@ static void exception_panic(const interrupt_frame_t* f) {
     put_line("RCX:        ", f->rcx);
     put_line("RDX:        ", f->rdx);
 
-    display_puts("\nSystem halted.\n");
-    audio_play_error_sound();
+    display_puts("\nThe system has halted to protect kernel state.\n");
+    display_puts("Restart the virtual machine to continue.\n");
+    display_present();
 
     for (;;) {
         asm volatile ("cli; hlt");

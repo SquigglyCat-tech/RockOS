@@ -51,6 +51,7 @@ bool display_draw_mask_bitmap(uint32_t x, uint32_t y, uint32_t width,
 bool display_draw_rockos_logo(uint32_t x, uint32_t y);
 bool display_fill_triangle(uint32_t x0, uint32_t y0, uint32_t x1,
     uint32_t y1, uint32_t x2, uint32_t y2, uint8_t color);
+void display_set_mouse_busy(bool busy);
 void display_clear(void);
 void display_set_color(uint8_t fg, uint8_t bg);
 void display_putchar(char c);

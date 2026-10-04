@@ -55,52 +55,6 @@ gdt64_pointer:
 .section .text
 _start:
     movl %eax, %esi
-    /* Emit an early marker so bootloader handoff can be separated from C startup. */
-    mov $0x3F9, %dx
-    xor %al, %al
-    outb %al, %dx
-    mov $0x3FB, %dx
-    mov $0x80, %al
-    outb %al, %dx
-    mov $0x3F8, %dx
-    mov $0x03, %al
-    outb %al, %dx
-    mov $0x3F9, %dx
-    xor %al, %al
-    outb %al, %dx
-    mov $0x3FB, %dx
-    mov $0x03, %al
-    outb %al, %dx
-    mov $0x3FA, %dx
-    mov $0xC7, %al
-    outb %al, %dx
-    mov $0x3FC, %dx
-    mov $0x0B, %al
-    outb %al, %dx
-    mov $0x3FD, %dx
-.serial_wait:
-    inb %dx, %al
-    test $0x20, %al
-    jz .serial_wait
-    mov $0x3F8, %dx
-    mov $'B', %al
-    outb %al, %dx
-    mov $0x3FD, %dx
-.serial_wait_newline:
-    inb %dx, %al
-    test $0x20, %al
-    jz .serial_wait_newline
-    mov $0x3F8, %dx
-    mov $'!', %al
-    outb %al, %dx
-    mov $0x3FD, %dx
-.serial_wait_newline2:
-    inb %dx, %al
-    test $0x20, %al
-    jz .serial_wait_newline2
-    mov $0x3F8, %dx
-    mov $'\n', %al
-    outb %al, %dx
     mov $boot_stack_top, %esp
 
     mov $p3_table, %eax

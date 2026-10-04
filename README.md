@@ -40,6 +40,20 @@ in addition to the roughly 21 MB boot ISO. Allow extra host storage for the
 build and for any disk images you keep. The installer overwrites its selected
 target disk; use a disposable virtual disk.
 
+`make run` gives the dedicated install-target disk boot priority, followed by
+the data disk and installer CD. After installation completes, restart the VM
+to boot the installed system. To boot it directly in QEMU, close the VM and
+run `make run-installed`.
+
+The installer prefers the ATA primary-slave disk as its target, preserving
+the primary-master data disk. If no slave disk is detected, it can use the
+primary-master disk; the confirmation page warns that this erases that disk.
+Only legacy IDE/ATA disks are currently supported by the installer.
+
+Audio uses an emulated Intel AC'97 device. If playback is unavailable, check
+that the virtual machine has audio output enabled and use the RockOS `audio`
+shell command to inspect AC'97 initialization and DMA playback status.
+
 Build the ISO without launching QEMU:
 
 ```sh

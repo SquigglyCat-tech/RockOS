@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 bool audio_init(void);
+const char* audio_initialization_status(void);
 bool play_pcm(const int16_t* interleaved_stereo, size_t frame_count,
     uint32_t sample_rate);
 typedef struct {

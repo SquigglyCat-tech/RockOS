@@ -17,8 +17,9 @@
 #define CELL_WIDTH 12U
 #define CELL_HEIGHT 24U
 #define FRAMEBUFFER_MAX_BYTES (32U * 1024U * 1024U)
-#define MOUSE_CURSOR_WIDTH 12U
-#define MOUSE_CURSOR_HEIGHT 18U
+#define MOUSE_CURSOR_WIDTH 20U
+#define MOUSE_CURSOR_ARROW_WIDTH 16U
+#define MOUSE_CURSOR_HEIGHT 24U
 
 static const uint8_t font_alphanumeric[36][5] = {
     {0x7E,0x11,0x11,0x11,0x7E}, {0x7F,0x49,0x49,0x49,0x36},
@@ -94,6 +95,7 @@ static uint64_t framebuffer_last_present_cycles;
 static uint32_t mouse_pixel_x;
 static uint32_t mouse_pixel_y;
 static bool mouse_pixel_visible;
+static bool mouse_pointer_busy;
 static bool mouse_cursor_visible;
 static uint8_t mouse_cursor_x;
 static uint8_t mouse_cursor_y;
@@ -212,16 +214,18 @@ static void put_pixel_overlay(uint32_t x, uint32_t y, uint32_t color) {
 
 static void draw_pixel_mouse_cursor(void) {
     static const uint16_t arrow[MOUSE_CURSOR_HEIGHT] = {
-        0x800, 0xC00, 0xE00, 0xF00, 0xF80, 0xFC0,
-        0xFE0, 0xFF0, 0xFF8, 0xFFC, 0xFE0, 0xDC0,
-        0x8E0, 0x060, 0x070, 0x030, 0x030, 0x000
+        0x8000, 0xC000, 0xE000, 0xF000, 0xF800, 0xFC00,
+        0xFE00, 0xFF00, 0xFF80, 0xFFC0, 0xFFE0, 0xFFF0,
+        0xFFF8, 0xFFFC, 0xFFE0, 0xEFC0, 0xC7C0, 0x03E0,
+        0x03F0, 0x01F0, 0x01F8, 0x00F8, 0x0078, 0x0038
     };
     uint32_t white = framebuffer_color(COLOR_WHITE);
     uint32_t black = framebuffer_color(COLOR_BLACK);
     for (uint32_t row = 0; row < MOUSE_CURSOR_HEIGHT; row++) {
-        for (uint32_t column = 0; column < MOUSE_CURSOR_WIDTH; column++) {
+        for (uint32_t column = 0; column < MOUSE_CURSOR_ARROW_WIDTH;
+             column++) {
             uint16_t bit = (uint16_t)(1U <<
-                (MOUSE_CURSOR_WIDTH - column - 1));
+                (MOUSE_CURSOR_ARROW_WIDTH - column - 1));
             if (!(arrow[row] & bit)) {
                 continue;
             }
@@ -233,6 +237,20 @@ static void draw_pixel_mouse_cursor(void) {
                     !(arrow[row] & (bit >> 1));
             put_pixel_overlay(mouse_pixel_x + column,
                 mouse_pixel_y + row, edge ? black : white);
+        }
+    }
+    if (mouse_pointer_busy) {
+        static const uint8_t hourglass[8] = {
+            0xFE, 0x82, 0x44, 0x28, 0x10, 0x28, 0x44, 0xFE
+        };
+        for (uint32_t row = 0; row < 8; row++) {
+            for (uint32_t column = 0; column < 8; column++) {
+                uint32_t color = hourglass[row] & (0x80U >> column)
+                    ? framebuffer_color(COLOR_YELLOW)
+                    : black;
+                put_pixel_overlay(mouse_pixel_x + 11 + column,
+                    mouse_pixel_y + row, color);
+            }
         }
     }
     mouse_pixel_visible = true;
@@ -1061,6 +1079,14 @@ bool display_set_mouse_position(uint32_t x, uint32_t y) {
     mouse_pixel_y = clamped_y;
     draw_pixel_mouse_cursor();
     return true;
+}
+
+void display_set_mouse_busy(bool busy) {
+    if (mouse_pointer_busy == busy) return;
+    mouse_pointer_busy = busy;
+    if (framebuffer_active && framebuffer_shadow) {
+        redraw_pixel_mouse_cursor();
+    }
 }
 
 void display_set_mouse_cursor(uint8_t x, uint8_t y) {

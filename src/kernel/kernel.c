@@ -324,7 +324,9 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     if (audio_init()) {
         display_puts("[+] AC'97 audio ready.\n");
     } else {
-        display_puts("[-] AC'97 audio device unavailable.\n");
+        display_puts("[-] AC'97 audio unavailable: ");
+        display_puts(audio_initialization_status());
+        display_putchar('\n');
         audio_play_error_sound();
     }
 
@@ -467,8 +469,8 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
                 render_exit_test();
                 render_sleep_test();
             }
-            render_mouse_cursor();
         }
+        render_mouse_cursor();
         input_mouse_state_t mouse_state;
         mouse_get_state(&mouse_state);
         if (shell_is_fullscreen() &&

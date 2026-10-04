@@ -113,6 +113,7 @@ static uint8_t shell_installer_region;
 static uint8_t shell_installer_keyboard;
 static shell_installer_button_t shell_installer_pressed_button;
 static uint8_t shell_installer_pressed_page;
+static const char* shell_installer_result_message;
 static bool shell_profile_enabled;
 static bool shell_profile_active;
 static uint64_t shell_profile_page_start;
@@ -853,17 +854,29 @@ static void shell_installer_draw_option(uint8_t row, bool active,
 }
 
 static const block_device_t* shell_installer_get_target(void) {
-    const block_device_t* install_target = NULL;
     size_t device_count = storage_get_device_count();
     for (size_t index = 0; index < device_count; index++) {
         const block_device_t* device = storage_get_device_at(index);
         if (device && shell_string_equals(device->name,
                 "ata0-primary-slave")) {
-            install_target = device;
-            break;
+            return device;
         }
     }
-    return install_target;
+
+    for (size_t index = 0; index < device_count; index++) {
+        const block_device_t* device = storage_get_device_at(index);
+        if (device && shell_string_equals(device->name,
+                "ata0-primary-master")) {
+            return device;
+        }
+    }
+    return NULL;
+}
+
+static bool shell_installer_target_is_primary_master(
+    const block_device_t* target) {
+    return target && shell_string_equals(target->name,
+        "ata0-primary-master");
 }
 
 void shell_set_boot_info(uintptr_t boot_info_address) {
@@ -949,7 +962,8 @@ static void shell_installer_draw_setup(void) {
                 DISPLAY_UI_TEXT_HEIGHT) / 2,
             "(c) 2026 RockOS. All rights reserved.", COLOR_LIGHT_GRAY,
             COLOR_BLACK);
-        shell_ui_draw_button(&button_rect, "Next", 34, true);
+        shell_ui_draw_button(&button_rect, "Next", 34,
+            shell_installer_pressed_button == SHELL_INSTALLER_BUTTON_NEXT);
         shell_profile_page_end();
         return;
     }
@@ -1011,6 +1025,8 @@ static void shell_installer_draw_preflight(void) {
         shell_installer_image != 0 &&
         image_sectors != 0 &&
         image_sectors <= install_target->sector_count;
+    bool target_is_primary_master =
+        shell_installer_target_is_primary_master(install_target);
     uint32_t width;
     uint32_t height;
     if (shell_get_graphics_size(&width, &height)) {
@@ -1025,10 +1041,15 @@ static void shell_installer_draw_preflight(void) {
         shell_ui_text(156, 150, "Dedicated installation disk",
             COLOR_WHITE, COLOR_BLACK);
         shell_ui_text(156, 202,
-            "The primary master (RockFS/data) disk will be preserved.",
-            COLOR_LIGHT_GRAY, COLOR_BLACK);
+            target_is_primary_master
+                ? "Only ATA disk detected; installation overwrites it."
+                : "The primary master (RockFS/data) disk will be preserved.",
+            target_is_primary_master ? COLOR_YELLOW : COLOR_LIGHT_GRAY,
+            COLOR_BLACK);
         if (install_target) {
-            shell_ui_text(156, 270, "Target: ATA primary slave",
+            shell_ui_text(156, 270, target_is_primary_master
+                    ? "Target: ATA primary master (only ATA disk detected)"
+                    : "Target: ATA primary slave",
                 COLOR_WHITE, COLOR_BLACK);
             shell_ui_text(156, 310, "Disk capacity:",
                 COLOR_LIGHT_GRAY, COLOR_BLACK);
@@ -1040,12 +1061,20 @@ static void shell_installer_draw_preflight(void) {
             shell_ui_size(SHELL_INSTALLER_VALUE_X, 350,
                 shell_installer_image_size, COLOR_WHITE, COLOR_BLACK);
         } else {
-            shell_ui_text(156, 286, "No ATA primary-slave disk detected.",
+            shell_ui_text(156, 286, "No supported ATA disk detected.",
                 COLOR_LIGHT_GRAY, COLOR_BLACK);
         }
-        shell_ui_text(156, 414, target_ready ?
-            "Ready to install RockOS." :
-            "Installer image or target disk is unavailable or too small.",
+        const char* readiness_message = !shell_installer_image ||
+                image_sectors == 0 ||
+                shell_installer_image_size % BLOCK_SECTOR_SIZE != 0
+            ? "Installer image is unavailable or invalid."
+            : !install_target
+                ? "No supported ATA target disk detected."
+                : install_target->sector_size != BLOCK_SECTOR_SIZE ||
+                    image_sectors > install_target->sector_count
+                    ? "Target disk is smaller than the installer image."
+                    : "Ready to install RockOS.";
+        shell_ui_text(156, 414, readiness_message,
             target_ready ? COLOR_WHITE : COLOR_LIGHT_GRAY, COLOR_BLACK);
         if (target_ready) {
             shell_ui_rect_t back_rect;
@@ -1054,13 +1083,16 @@ static void shell_installer_draw_preflight(void) {
                 SHELL_INSTALLER_BUTTON_BACK, width, height, &back_rect);
             shell_installer_button_rect(SHELL_INSTALLER_PAGE_TARGET,
                 SHELL_INSTALLER_BUTTON_NEXT, width, height, &next_rect);
-            shell_ui_draw_button(&back_rect, "BACK", 40, false);
-            shell_ui_draw_button(&next_rect, "NEXT", 28, true);
+            shell_ui_draw_button(&back_rect, "BACK", 40,
+                shell_installer_pressed_button == SHELL_INSTALLER_BUTTON_BACK);
+            shell_ui_draw_button(&next_rect, "NEXT", 28,
+                shell_installer_pressed_button == SHELL_INSTALLER_BUTTON_NEXT);
         } else {
             shell_ui_rect_t back_rect;
             shell_installer_button_rect(SHELL_INSTALLER_PAGE_TARGET,
                 SHELL_INSTALLER_BUTTON_BACK, width, height, &back_rect);
-            shell_ui_draw_button(&back_rect, "BACK", 40, false);
+            shell_ui_draw_button(&back_rect, "BACK", 40,
+                shell_installer_pressed_button == SHELL_INSTALLER_BUTTON_BACK);
         }
         shell_ui_text(156, height - 92,
             "Enter: continue   Backspace: preferences   Esc: exit",
@@ -1076,12 +1108,18 @@ static void shell_installer_draw_preflight(void) {
     display_set_color(COLOR_YELLOW, COLOR_BLACK);
     display_write_at(2, 2, "Installation disk preflight");
     display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
-    display_write_at(2, 4, "Only a separate dedicated target disk may be used.");
-    display_write_at(2, 6, "Primary master (RockFS/data) is preserved.");
+    display_write_at(2, 4, target_is_primary_master
+        ? "Only ATA disk detected; install will overwrite it."
+        : "A dedicated target disk is required.");
+    if (!target_is_primary_master) {
+        display_write_at(2, 6, "Primary master (RockFS/data) is preserved.");
+    }
     display_write_at(2, 8, "BIOS + UEFI boot support is included.");
     if (install_target) {
         display_set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
-        display_write_at(2, 11, "Dedicated target detected: ata0-primary-slave");
+        display_write_at(2, 11, target_is_primary_master
+            ? "Target detected: ata0-primary-master"
+            : "Target detected: ata0-primary-slave");
         display_set_color(COLOR_WHITE, COLOR_BLACK);
         display_write_at(2, 12, "Capacity:");
         display_set_cursor(12, 12);
@@ -1098,14 +1136,21 @@ static void shell_installer_draw_preflight(void) {
         }
     } else {
         display_set_color(COLOR_YELLOW, COLOR_BLACK);
-        display_write_at(2, 11, "No dedicated primary-slave target disk detected.");
-        display_write_at(2, 13, "Attach a separate blank disk as ATA primary slave.");
+        display_write_at(2, 11, "No supported ATA target disk detected.");
+        display_write_at(2, 13, "Attach an IDE/ATA disk to continue.");
     }
     display_set_color(target_ready ? COLOR_LIGHT_GREEN : COLOR_YELLOW,
         COLOR_BLACK);
-    display_write_at(2, 17, target_ready ?
-        "Ready to install to the dedicated target." :
-        "Cannot install: image or target is unavailable/too small.");
+    display_write_at(2, 17, !shell_installer_image ||
+            image_sectors == 0 ||
+            shell_installer_image_size % BLOCK_SECTOR_SIZE != 0
+        ? "Cannot install: installer image is unavailable or invalid."
+        : !install_target
+            ? "Cannot install: no supported ATA target disk."
+            : install_target->sector_size != BLOCK_SECTOR_SIZE ||
+                image_sectors > install_target->sector_count
+                ? "Cannot install: target disk is smaller than the image."
+                : "Ready to install to the selected target.");
     display_set_color(COLOR_WHITE, COLOR_BLACK);
     display_set_color(COLOR_WHITE, COLOR_BLUE);
     display_write_at(60, 22, "[  Next  ]");
@@ -1118,6 +1163,8 @@ static void shell_installer_draw_preflight(void) {
 static void shell_installer_draw_confirmation(void) {
     shell_profile_page_begin("confirmation");
     const block_device_t* install_target = shell_installer_get_target();
+    bool target_is_primary_master =
+        shell_installer_target_is_primary_master(install_target);
     uint32_t width;
     uint32_t height;
     if (shell_get_graphics_size(&width, &height)) {
@@ -1135,7 +1182,9 @@ static void shell_installer_draw_confirmation(void) {
         shell_ui_text(232, 166,
             "This overwrites the beginning of the selected disk.",
             COLOR_WHITE, COLOR_BLACK);
-        shell_ui_text(156, 250, "Target: ATA primary slave",
+        shell_ui_text(156, 250, target_is_primary_master
+                ? "Target: ATA primary master (only ATA disk detected)"
+                : "Target: ATA primary slave",
             COLOR_WHITE, COLOR_BLACK);
         shell_ui_text(156, 294, "Install image:", COLOR_LIGHT_GRAY,
             COLOR_BLACK);
@@ -1148,8 +1197,11 @@ static void shell_installer_draw_confirmation(void) {
                 install_target->sector_count * install_target->sector_size,
                 COLOR_WHITE, COLOR_BLACK);
         }
-        shell_ui_text(156, 382, "Primary master data disk is not touched.",
-            COLOR_LIGHT_GRAY, COLOR_BLACK);
+        shell_ui_text(156, 382, target_is_primary_master
+                ? "WARNING: all existing data on this disk will be lost."
+                : "Primary master data disk is not touched.",
+            target_is_primary_master ? COLOR_YELLOW : COLOR_LIGHT_GRAY,
+            COLOR_BLACK);
         shell_ui_text(156, 422, "Press Y, then Enter; or click Install twice.",
             COLOR_LIGHT_GRAY, COLOR_BLACK);
         shell_ui_rect_t cancel_rect;
@@ -1158,8 +1210,10 @@ static void shell_installer_draw_confirmation(void) {
             SHELL_INSTALLER_BUTTON_CANCEL, width, height, &cancel_rect);
         shell_installer_button_rect(SHELL_INSTALLER_PAGE_CONFIRM,
             SHELL_INSTALLER_BUTTON_INSTALL, width, height, &install_rect);
-        shell_ui_draw_button(&cancel_rect, "CANCEL", 40, false);
-        shell_ui_draw_button(&install_rect, "INSTALL", 28, true);
+        shell_ui_draw_button(&cancel_rect, "CANCEL", 40,
+            shell_installer_pressed_button == SHELL_INSTALLER_BUTTON_CANCEL);
+        shell_ui_draw_button(&install_rect, "INSTALL", 28,
+            shell_installer_pressed_button == SHELL_INSTALLER_BUTTON_INSTALL);
         shell_ui_text(156, height - 92,
             "Esc: cancel   Backspace: return to target selection",
             COLOR_LIGHT_GRAY, COLOR_BLACK);
@@ -1175,7 +1229,9 @@ static void shell_installer_draw_confirmation(void) {
     display_write_at(2, 3,
         "This overwrites the beginning of the selected target disk.");
     display_set_color(COLOR_WHITE, COLOR_BLACK);
-    display_write_at(2, 6, "Target: ata0-primary-slave");
+    display_write_at(2, 6, target_is_primary_master
+        ? "Target: ata0-primary-master (only ATA disk detected)"
+        : "Target: ata0-primary-slave");
     display_write_at(2, 8, "Image size:");
     display_set_cursor(14, 8);
     shell_write_decimal(shell_installer_image_size);
@@ -1189,11 +1245,16 @@ static void shell_installer_draw_confirmation(void) {
             install_target->sector_size);
         shell_write(" bytes");
     }
-    display_write_at(2, 12, "The primary master (RockFS/data) disk is not touched.");
+    display_set_color(target_is_primary_master ? COLOR_LIGHT_RED :
+        COLOR_LIGHT_GRAY, COLOR_BLACK);
+    display_write_at(2, 12, target_is_primary_master
+        ? "WARNING: all existing data on this disk will be lost."
+        : "The primary master (RockFS/data) disk is not touched.");
     display_write_at(2, 14, "BIOS and UEFI boot files will be installed.");
     display_set_color(COLOR_LIGHT_RED, COLOR_BLACK);
-    display_write_at(2, 15,
-        "Press Y to confirm overwriting ata0-primary-slave.");
+    display_write_at(2, 15, target_is_primary_master
+        ? "Press Y to confirm overwriting ata0-primary-master."
+        : "Press Y to confirm overwriting ata0-primary-slave.");
     display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     display_write_at(2, 17, "Then press Enter to begin installation.");
     display_write_at(2, 24, "Esc: cancel | Backspace: target check");
@@ -1201,7 +1262,9 @@ static void shell_installer_draw_confirmation(void) {
 }
 
 static void shell_installer_draw_result(const char* message) {
+    display_set_mouse_busy(false);
     shell_profile_page_begin("result");
+    shell_installer_result_message = message;
     shell_installer_page = SHELL_INSTALLER_PAGE_RESULT;
     uint32_t width;
     uint32_t height;
@@ -1220,8 +1283,10 @@ static void shell_installer_draw_result(const char* message) {
         shell_ui_rect_t finish_rect;
         shell_installer_button_rect(SHELL_INSTALLER_PAGE_RESULT,
             SHELL_INSTALLER_BUTTON_FINISH, width, height, &finish_rect);
-        shell_ui_draw_button(&finish_rect, "FINISH", 28, true);
-        shell_ui_text(156, height - 92, "Press Esc to return to the shell.",
+        shell_ui_draw_button(&finish_rect, "FINISH", 28,
+            shell_installer_pressed_button == SHELL_INSTALLER_BUTTON_FINISH);
+        shell_ui_text(156, height - 92,
+            "Restart the VM to boot from the installed disk.",
             COLOR_LIGHT_GRAY, COLOR_BLACK);
         shell_profile_page_end();
         return;
@@ -1234,7 +1299,7 @@ static void shell_installer_draw_result(const char* message) {
     display_set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
     display_write_at(2, 5, message);
     display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
-    display_write_at(2, 24, "Press Esc to return to the shell.");
+    display_write_at(2, 24, "Restart the VM to boot from the installed disk.");
     shell_profile_page_end();
 }
 
@@ -1277,6 +1342,8 @@ static void shell_installer_install(void) {
         return;
     }
 
+    display_set_mouse_busy(true);
+    display_present();
     display_set_color(COLOR_WHITE, COLOR_BLACK);
     display_clear();
     uint32_t width;
@@ -1307,8 +1374,7 @@ static void shell_installer_install(void) {
         display_set_color(COLOR_WHITE, COLOR_BLUE);
         display_write_at(0, 0, "RockOS Setup - Installing");
         display_set_color(COLOR_LIGHT_CYAN, COLOR_BLACK);
-        display_write_at(2, 4,
-            "Writing bootable image to ata0-primary-slave...");
+        display_write_at(2, 4, target->name);
     }
 
     uint64_t last_progress_lba = 0;
@@ -1405,7 +1471,7 @@ static void shell_installer_install(void) {
     }
 
     shell_installer_draw_result(
-        "Installation succeeded. Remove ISO and reboot to RockOS.");
+        "Installed. Restart the VM to start RockOS.");
 }
 
 static void shell_installer_open(void) {
@@ -1570,6 +1636,27 @@ static void shell_installer_activate_button(
     }
 }
 
+static void shell_installer_redraw_current_page(void) {
+    switch (shell_installer_page) {
+        case SHELL_INSTALLER_PAGE_PREFERENCES:
+            shell_installer_draw_setup();
+            break;
+        case SHELL_INSTALLER_PAGE_TARGET:
+            shell_installer_draw_preflight();
+            break;
+        case SHELL_INSTALLER_PAGE_CONFIRM:
+            shell_installer_draw_confirmation();
+            break;
+        case SHELL_INSTALLER_PAGE_RESULT:
+            if (shell_installer_result_message) {
+                shell_installer_draw_result(shell_installer_result_message);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
 static void shell_installer_handle_key(const input_key_event_t* event) {
     if (event->ascii == 27) {
         shell_installer_navigate(SHELL_INSTALLER_ACTION_CANCEL);
@@ -1627,6 +1714,8 @@ void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_button_down) {
                     &rect) &&
                 shell_ui_rect_contains(&rect, x, y)) {
                 shell_installer_activate_button(button);
+            } else {
+                shell_installer_redraw_current_page();
             }
         }
         return;
@@ -1639,6 +1728,7 @@ void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_button_down) {
     if (button != SHELL_INSTALLER_BUTTON_NONE) {
         shell_installer_pressed_button = button;
         shell_installer_pressed_page = shell_installer_page;
+        shell_installer_redraw_current_page();
         return;
     }
 
@@ -1968,6 +2058,9 @@ static void shell_print_audio(void) {
     audio_diagnostics_t diagnostics;
     audio_get_diagnostics(&diagnostics);
 
+    shell_write("AC'97 initialization: ");
+    shell_write(audio_initialization_status());
+    display_putchar('\n');
     shell_write("AC'97 PCI device: ");
     shell_write(diagnostics.pci_device_found ? "found\n" : "not found\n");
     if (!diagnostics.pci_device_found) return;

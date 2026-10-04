@@ -66,6 +66,7 @@ static bool audio_playback_prepared;
 static size_t audio_descriptor_count;
 static uint16_t audio_picb_before_start;
 static uint16_t audio_picb_after_start;
+static const char* audio_init_status = "not initialized";
 
 static void audio_fill_test_tone(void) {
     uint64_t phase = 0;
@@ -91,9 +92,14 @@ bool audio_init(void) {
     audio_ready = false;
     audio_reset_completed = false;
     audio_last_play_succeeded = false;
+    audio_init_status = "AC'97 controller not found";
 
     const pci_device_t* device = pci_find_by_id(AUDIO_PCI_VENDOR, AUDIO_PCI_DEVICE);
-    if (!device || !device->bars[0].present || !device->bars[0].is_io ||
+    if (!device) {
+        return false;
+    }
+    audio_init_status = "invalid AC'97 I/O BAR configuration";
+    if (!device->bars[0].present || !device->bars[0].is_io ||
         !device->bars[1].present || !device->bars[1].is_io ||
         device->bars[0].addr > UINT16_MAX - AUDIO_CODEC_PCM_VOLUME - 2 ||
         device->bars[1].addr > UINT16_MAX - AUDIO_BM_GLOBAL_STATUS - 4) {
@@ -108,6 +114,7 @@ bool audio_init(void) {
     pci_config_write16(device->bus, device->device, device->function,
         PCI_OFF_COMMAND, command | 0x0005U);
 
+    audio_init_status = "AC'97 codec did not become ready";
     bool codec_ready = false;
     for (uint32_t poll = 0; poll < AUDIO_MAX_RESET_POLLS; poll++) {
         if ((inl((uint16_t)(bus_master_base + AUDIO_BM_GLOBAL_STATUS)) &
@@ -120,6 +127,7 @@ bool audio_init(void) {
         return false;
     }
 
+    audio_init_status = "AC'97 PCM output reset timed out";
     outb((uint16_t)(bus_master_base + AUDIO_BM_PCM_OUT + AUDIO_BM_CONTROL),
         AUDIO_BM_RESET);
     for (uint32_t poll = 0; poll < AUDIO_MAX_RESET_POLLS; poll++) {
@@ -140,7 +148,12 @@ bool audio_init(void) {
     outb((uint16_t)(bus_master_base + AUDIO_BM_PCM_OUT + AUDIO_BM_STATUS),
         AUDIO_BM_CLEAR_STATUS);
     audio_ready = true;
+    audio_init_status = "ready";
     return true;
+}
+
+const char* audio_initialization_status(void) {
+    return audio_init_status;
 }
 
 static bool audio_prepare_pcm(const int16_t* interleaved_stereo,
