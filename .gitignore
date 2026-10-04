@@ -1,0 +1,19 @@
+# Local environments and editor settings
+.venv/
+.vscode/
+
+# Compiler and build outputs
+*.o
+*.bin
+*.iso
+*.img
+/build/
+
+# Generated Limine binaries (the configuration files remain tracked)
+/iso/EFI/BOOT/BOOTX64.EFI
+/iso/boot/limine-bios.sys
+/iso/boot/limine-bios-cd.bin
+/iso/boot/limine-uefi-cd.bin
+/iso/boot/rockos.bin
+/iso/boot/rockos-install.img
+/iso/boot/selawik-OFL.txt

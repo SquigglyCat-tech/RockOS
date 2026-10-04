@@ -1,0 +1,35 @@
+ROK / RockOS Quick Start
+========================
+
+Open MSYS2 UCRT64 and run:
+
+export PATH="/c/opt/x86_64-elf-tools/bin:$PATH"
+cd /c/path/to/rockos
+make run
+
+Or a simplified version: export PATH="/c/opt/x86_64-elf-tools/bin:$PATH" && cd /c/path/to/rockos && make run
+
+This will:
+- Build RockOS
+- Create the QEMU storage image if needed
+- Boot RockOS in QEMU with Intel AC'97 audio and a short test tone
+- Play the bundled error sound on kernel exceptions and reported errors
+
+To boot without the test tone, use `make AUDIO_BOOT_TEST_TONE=0 run`.
+PCM playback currently accepts interleaved signed 16-bit stereo at 48 kHz.
+Use the `audio` shell command to play a diagnostic test tone and inspect AC'97
+PCI, codec, PICB, stream, and BDL/DMA status. It waits about 20 ms and reports
+whether the DMA sample count decreased. The `panic` shell command intentionally
+tests the kernel exception handler and halts the system; reboot after using it.
+The error sound is bundled as 48 kHz PCM in `assets/error_48000_stereo_s16le.pcm`;
+its supplied Ogg source is kept at `assets/error.ogg`.
+
+To only build:
+make
+
+To clean the build:
+make clean
+
+IMPORTANT:
+RockOS is currently tested in QEMU.
+Do not run it against a physical Windows disk.
