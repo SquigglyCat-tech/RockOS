@@ -31,6 +31,15 @@ export PATH="/c/opt/x86_64-elf-tools/bin:$PATH"
 make run
 ```
 
+### Virtual machine storage
+
+The V.1 installer image is 16 MiB, so the install-target disk must be at least
+16 MiB. The default `make run` configuration creates a 64 MiB install-target
+disk and a separate 16 MiB data disk (80 MiB total virtual-disk capacity),
+in addition to the roughly 21 MB boot ISO. Allow extra host storage for the
+build and for any disk images you keep. The installer overwrites its selected
+target disk; use a disposable virtual disk.
+
 Build the ISO without launching QEMU:
 
 ```sh
