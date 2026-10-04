@@ -15,7 +15,7 @@ graphical installer and a small interactive kernel environment.
 - Isolated Ring 3 proof of concept
 
 RockOS is work in progress and is currently intended for QEMU. Do not use the
-installer on a physical disk.
+installer on a physical disk. Expect bugs (If you need them fixed just dm me @spaminhaler_30401 on Discord)
 
 ## Build and run
 
