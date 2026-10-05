@@ -17,6 +17,7 @@
 #include "shell.h"
 #include "audio.h"
 #include "serial.h"
+#include "desktop.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -461,6 +462,21 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     while (1) {
         audio_poll();
         uint64_t current_ticks = timer_get_ticks();
+        if (desktop_is_active()) {
+            input_mouse_state_t dms;
+            mouse_get_state(&dms);
+            desktop_handle_mouse(dms.x, dms.y, dms.left_btn);
+            input_key_event_t dke;
+            while (keyboard_get_event(&dke)) {
+                desktop_handle_key(&dke);
+            }
+            desktop_update(current_ticks);
+            render_mouse_cursor();
+            display_present();
+            task_yield();
+            asm volatile ("hlt");
+            continue;
+        }
         if (current_ticks != last_rendered_tick) {
             last_rendered_tick = current_ticks;
             if (!shell_is_fullscreen()) {
@@ -483,7 +499,11 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
 
         input_key_event_t key_evt;
         if (keyboard_get_event(&key_evt)) {
-            shell_handle_key_event(&key_evt);
+            if (desktop_is_launch_hotkey(&key_evt)) {
+                desktop_start();
+            } else {
+                shell_handle_key_event(&key_evt);
+            }
         }
         display_present();
         task_yield();
