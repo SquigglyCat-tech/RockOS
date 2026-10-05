@@ -1,0 +1,365 @@
+#include "desktop.h"
+
+#include "display.h"
+#include "shell.h"
+#include "timer.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#define DESKTOP_TASKBAR_HEIGHT 48U
+#define DESKTOP_TITLE_HEIGHT 36U
+#define DESKTOP_MARGIN 16U
+
+typedef enum {
+    DESKTOP_WINDOW_NONE,
+    DESKTOP_WINDOW_ABOUT,
+    DESKTOP_WINDOW_SHORTCUTS
+} desktop_window_t;
+
+static bool desktop_active;
+static bool start_menu_open;
+static bool previous_left_down;
+static bool dragging_window;
+static bool clock_initialized;
+static uint32_t desktop_width;
+static uint32_t desktop_height;
+static uint32_t mouse_x;
+static uint32_t mouse_y;
+static uint32_t drag_offset_x;
+static uint32_t drag_offset_y;
+static uint8_t menu_selection;
+static uint32_t window_x;
+static uint32_t window_y;
+static uint32_t window_width;
+static uint32_t window_height;
+static uint64_t displayed_second;
+static desktop_window_t active_window;
+
+static void fill_rgb(uint32_t x, uint32_t y, uint32_t width,
+    uint32_t height, uint8_t red, uint8_t green, uint8_t blue) {
+    if (width && height) {
+        (void)display_fill_rect_rgb(x, y, width, height, red, green, blue);
+    }
+}
+
+static void draw_text(uint32_t x, uint32_t y, const char* text,
+    uint8_t red, uint8_t green, uint8_t blue) {
+    uint16_t luminance = (uint16_t)red * 3U + (uint16_t)green * 4U + blue;
+    uint8_t foreground = luminance >= 1024 ? COLOR_WHITE : COLOR_BLACK;
+    (void)display_draw_text_ui(x, y, text, foreground);
+}
+
+static void draw_clock(uint64_t ticks) {
+    char text[16];
+    uint64_t seconds = ticks / 100;
+    uint64_t minutes = seconds / 60;
+    uint8_t hour = (uint8_t)((minutes / 60) % 24);
+    uint8_t minute = (uint8_t)(minutes % 60);
+    uint8_t second = (uint8_t)(seconds % 60);
+    text[0] = (char)('0' + hour / 10);
+    text[1] = (char)('0' + hour % 10);
+    text[2] = ':';
+    text[3] = (char)('0' + minute / 10);
+    text[4] = (char)('0' + minute % 10);
+    text[5] = ':';
+    text[6] = (char)('0' + second / 10);
+    text[7] = (char)('0' + second % 10);
+    text[8] = '\0';
+    fill_rgb(desktop_width - 212, desktop_height - 42, 200, 34,
+        24, 39, 68);
+    draw_text(desktop_width - 202, desktop_height - 34, text,
+        240, 245, 255);
+}
+
+static void draw_taskbar(uint64_t ticks) {
+    uint32_t y = desktop_height - DESKTOP_TASKBAR_HEIGHT;
+    fill_rgb(0, y, desktop_width, DESKTOP_TASKBAR_HEIGHT, 13, 22, 40);
+    fill_rgb(0, y, desktop_width, 1, 54, 93, 145);
+    fill_rgb(14, y + 7, 190, 34, 40, 92, 158);
+    draw_text(29, y + 14, "RockOS", 255, 255, 255);
+    draw_clock(ticks);
+}
+
+static void draw_icon(uint32_t x, uint32_t y, const char* label,
+    uint8_t red, uint8_t green, uint8_t blue) {
+    fill_rgb(x + 13, y, 48, 42, red, green, blue);
+    fill_rgb(x + 21, y + 8, 32, 26, 232, 241, 255);
+    fill_rgb(x + 27, y + 14, 20, 14, red, green, blue);
+    draw_text(x, y + 50, label, 255, 255, 255);
+}
+
+static void draw_start_menu(void) {
+    uint32_t menu_width = desktop_width < 524
+        ? desktop_width - 24 : 500;
+    uint32_t menu_height = desktop_height < 420 ? desktop_height - 88 : 320;
+    uint32_t menu_x = 12;
+    uint32_t menu_y = desktop_height - DESKTOP_TASKBAR_HEIGHT -
+        menu_height - 8;
+
+    fill_rgb(menu_x + 4, menu_y + 4, menu_width, menu_height,
+        8, 13, 25);
+    fill_rgb(menu_x, menu_y, menu_width, menu_height, 28, 42, 65);
+    fill_rgb(menu_x, menu_y, menu_width, 48, 43, 93, 150);
+    draw_text(menu_x + 18, menu_y + 14, "RockOS", 255, 255, 255);
+    fill_rgb(menu_x + 12, menu_y + 62, menu_width - 24, 50,
+        menu_selection == 0 ? 54 : 39,
+        menu_selection == 0 ? 91 : 59,
+        menu_selection == 0 ? 139 : 84);
+    draw_text(menu_x + 24, menu_y + 77, "About RockOS", 245, 248, 255);
+    fill_rgb(menu_x + 12, menu_y + 122, menu_width - 24, 50,
+        menu_selection == 1 ? 54 : 39,
+        menu_selection == 1 ? 91 : 59,
+        menu_selection == 1 ? 139 : 84);
+    draw_text(menu_x + 24, menu_y + 137, "Keyboard shortcuts",
+        245, 248, 255);
+    fill_rgb(menu_x + 12, menu_y + menu_height - 62,
+        menu_width - 24, 48, menu_selection == 2 ? 54 : 39,
+        menu_selection == 2 ? 91 : 59,
+        menu_selection == 2 ? 139 : 84);
+    draw_text(menu_x + 24, menu_y + menu_height - 48,
+        "Return to shell", 245, 248, 255);
+}
+
+static void draw_window(void) {
+    if (active_window == DESKTOP_WINDOW_NONE) return;
+
+    fill_rgb(window_x + 7, window_y + 7, window_width, window_height,
+        8, 13, 22);
+    fill_rgb(window_x, window_y, window_width, window_height,
+        238, 243, 250);
+    fill_rgb(window_x, window_y, window_width, DESKTOP_TITLE_HEIGHT,
+        35, 72, 119);
+    fill_rgb(window_x + window_width - 34, window_y + 6, 24, 24,
+        177, 57, 67);
+    draw_text(window_x + window_width - 34, window_y + 8, "x",
+        255, 255, 255);
+
+    if (active_window == DESKTOP_WINDOW_ABOUT) {
+        draw_text(window_x + 16, window_y + 10, "About RockOS",
+            255, 255, 255);
+        draw_text(window_x + 28, window_y + 64, "RockOS V.1",
+            34, 51, 74);
+        draw_text(window_x + 28, window_y + 104,
+            "Experimental 64-bit x86", 34, 51, 74);
+        draw_text(window_x + 28, window_y + 144,
+            "Hobby OS built with C", 34, 51, 74);
+        draw_text(window_x + 28, window_y + 184,
+            "Uses the Limine loader.", 34, 51, 74);
+        draw_text(window_x + 28, window_y + 224,
+            "Press Ctrl+Alt+D to", 34, 51, 74);
+        draw_text(window_x + 28, window_y + 264,
+            "toggle the desktop.", 34, 51, 74);
+    } else {
+        draw_text(window_x + 16, window_y + 10, "Keyboard shortcuts",
+            255, 255, 255);
+        draw_text(window_x + 28, window_y + 64,
+            "Ctrl+Alt+D: toggle", 34, 51, 74);
+        draw_text(window_x + 28, window_y + 104,
+            "Esc: close or exit", 34, 51, 74);
+        draw_text(window_x + 28, window_y + 144,
+            "Arrows: choose menu", 34, 51, 74);
+        draw_text(window_x + 28, window_y + 184,
+            "Enter: open item", 34, 51, 74);
+    }
+}
+
+static void draw_desktop(uint64_t ticks) {
+    fill_rgb(0, 0, desktop_width, desktop_height, 19, 48, 79);
+    fill_rgb(0, desktop_height / 3, desktop_width,
+        desktop_height / 3, 23, 63, 100);
+    fill_rgb(0, desktop_height * 2 / 3, desktop_width,
+        desktop_height - desktop_height * 2 / 3, 16, 39, 67);
+    fill_rgb(0, desktop_height / 2, desktop_width, 2, 35, 78, 117);
+    draw_icon(26, 34, "About", 67, 137, 209);
+    draw_icon(26, 132, "Keys", 62, 170, 133);
+    draw_taskbar(ticks);
+    draw_window();
+    if (start_menu_open) draw_start_menu();
+}
+
+static void open_window(desktop_window_t window) {
+    active_window = window;
+    start_menu_open = false;
+    window_width = desktop_width - 96;
+    if (window_width > 620) window_width = 620;
+    window_height = desktop_height - 160;
+    if (window_height > 360) window_height = 360;
+    window_x = (desktop_width - window_width) / 2;
+    window_y = (desktop_height - DESKTOP_TASKBAR_HEIGHT - window_height) / 2;
+}
+
+static void stop_desktop(void) {
+    desktop_active = false;
+    start_menu_open = false;
+    active_window = DESKTOP_WINDOW_NONE;
+    dragging_window = false;
+    shell_init();
+}
+
+static void activate_menu_item(uint8_t selection) {
+    if (selection == 0) {
+        open_window(DESKTOP_WINDOW_ABOUT);
+    } else if (selection == 1) {
+        open_window(DESKTOP_WINDOW_SHORTCUTS);
+    } else {
+        stop_desktop();
+    }
+}
+
+void desktop_start(void) {
+    if (desktop_active) return;
+    if (!display_get_framebuffer_size(&desktop_width, &desktop_height) ||
+        desktop_width < 480 || desktop_height < 320) {
+        display_set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        display_puts("[desktop] A framebuffer of at least 480x320 is required.\n");
+        display_set_color(COLOR_WHITE, COLOR_BLACK);
+        return;
+    }
+
+    desktop_active = true;
+    start_menu_open = false;
+    menu_selection = 0;
+    previous_left_down = false;
+    dragging_window = false;
+    active_window = DESKTOP_WINDOW_NONE;
+    clock_initialized = false;
+    draw_desktop(timer_get_ticks());
+}
+
+void desktop_stop(void) {
+    if (desktop_active) stop_desktop();
+}
+
+bool desktop_is_active(void) {
+    return desktop_active;
+}
+
+void desktop_handle_mouse(int32_t x, int32_t y, bool left_down) {
+    if (!desktop_active) return;
+    mouse_x = (uint32_t)x;
+    mouse_y = (uint32_t)y;
+
+    if (dragging_window && left_down) {
+        uint32_t max_x = desktop_width - window_width;
+        uint32_t max_y = desktop_height - DESKTOP_TASKBAR_HEIGHT -
+            DESKTOP_TITLE_HEIGHT;
+        uint32_t next_x = mouse_x > drag_offset_x
+            ? mouse_x - drag_offset_x : 0;
+        uint32_t next_y = mouse_y > drag_offset_y
+            ? mouse_y - drag_offset_y : 0;
+        if (next_x > max_x) next_x = max_x;
+        if (next_y > max_y) next_y = max_y;
+        if (next_x != window_x || next_y != window_y) {
+            window_x = next_x;
+            window_y = next_y;
+            draw_desktop(timer_get_ticks());
+        }
+    } else if (!left_down) {
+        dragging_window = false;
+    }
+
+    if (left_down && !previous_left_down) {
+        uint32_t taskbar_y = desktop_height - DESKTOP_TASKBAR_HEIGHT;
+        if (mouse_y >= taskbar_y && mouse_x < 210) {
+            start_menu_open = !start_menu_open;
+            menu_selection = 0;
+            draw_desktop(timer_get_ticks());
+        } else if (start_menu_open) {
+            uint32_t menu_width = desktop_width < 524
+                ? desktop_width - 24 : 500;
+            uint32_t menu_height = desktop_height < 420
+                ? desktop_height - 88 : 320;
+            uint32_t menu_x = 12;
+            uint32_t menu_y = taskbar_y - menu_height - 8;
+            if (mouse_x >= menu_x && mouse_x < menu_x + menu_width &&
+                mouse_y >= menu_y + 62 && mouse_y < menu_y + 112) {
+                activate_menu_item(0);
+                draw_desktop(timer_get_ticks());
+            } else if (mouse_x >= menu_x &&
+                mouse_x < menu_x + menu_width &&
+                mouse_y >= menu_y + 122 && mouse_y < menu_y + 172) {
+                activate_menu_item(1);
+                draw_desktop(timer_get_ticks());
+            } else if (mouse_x >= menu_x &&
+                mouse_x < menu_x + menu_width &&
+                mouse_y >= menu_y + menu_height - 62 &&
+                mouse_y < menu_y + menu_height - 14) {
+                stop_desktop();
+            } else {
+                start_menu_open = false;
+                draw_desktop(timer_get_ticks());
+            }
+        } else if (active_window != DESKTOP_WINDOW_NONE &&
+            mouse_x >= window_x + window_width - 34 &&
+            mouse_x < window_x + window_width - 10 &&
+            mouse_y >= window_y + 6 &&
+            mouse_y < window_y + DESKTOP_TITLE_HEIGHT) {
+            active_window = DESKTOP_WINDOW_NONE;
+            draw_desktop(timer_get_ticks());
+        } else if (active_window != DESKTOP_WINDOW_NONE &&
+            mouse_x >= window_x && mouse_x < window_x + window_width &&
+            mouse_y >= window_y &&
+            mouse_y < window_y + DESKTOP_TITLE_HEIGHT) {
+            dragging_window = true;
+            drag_offset_x = mouse_x - window_x;
+            drag_offset_y = mouse_y - window_y;
+        } else if (mouse_x < 112 && mouse_y >= 34 && mouse_y < 110) {
+            open_window(DESKTOP_WINDOW_ABOUT);
+            draw_desktop(timer_get_ticks());
+        } else if (mouse_x < 148 && mouse_y >= 132 && mouse_y < 208) {
+            open_window(DESKTOP_WINDOW_SHORTCUTS);
+            draw_desktop(timer_get_ticks());
+        }
+    }
+    previous_left_down = left_down;
+}
+
+void desktop_handle_key(const input_key_event_t* event) {
+    if (!desktop_active || !event || !event->is_pressed) return;
+    if (desktop_is_launch_hotkey(event)) {
+        stop_desktop();
+        return;
+    }
+    if (event->scancode == 0x01) {
+        if (start_menu_open) {
+            start_menu_open = false;
+            draw_desktop(timer_get_ticks());
+        } else if (active_window != DESKTOP_WINDOW_NONE) {
+            active_window = DESKTOP_WINDOW_NONE;
+            draw_desktop(timer_get_ticks());
+        } else {
+            stop_desktop();
+        }
+    } else if (start_menu_open && event->is_extended &&
+        (event->scancode == 0x48 || event->scancode == 0x50)) {
+        menu_selection = event->scancode == 0x48
+            ? (uint8_t)((menu_selection + 2) % 3)
+            : (uint8_t)((menu_selection + 1) % 3);
+        draw_desktop(timer_get_ticks());
+    } else if (start_menu_open &&
+        (event->ascii == '\n' || event->scancode == 0x1C)) {
+        activate_menu_item(menu_selection);
+        if (desktop_active) draw_desktop(timer_get_ticks());
+    } else if (!event->is_extended && event->ascii == ' ') {
+        start_menu_open = !start_menu_open;
+        menu_selection = 0;
+        draw_desktop(timer_get_ticks());
+    }
+}
+
+void desktop_update(uint64_t ticks) {
+    if (!desktop_active) return;
+    uint64_t current_second = ticks / 100;
+    if (!clock_initialized || current_second != displayed_second) {
+        displayed_second = current_second;
+        clock_initialized = true;
+        draw_clock(ticks);
+    }
+}
+
+bool desktop_is_launch_hotkey(const input_key_event_t* event) {
+    return event && event->is_pressed && !event->is_extended &&
+        (event->modifiers & (MOD_CTRL | MOD_ALT)) == (MOD_CTRL | MOD_ALT) &&
+        (event->ascii == 'd' || event->ascii == 'D');
+}

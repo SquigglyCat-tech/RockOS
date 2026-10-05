@@ -17,6 +17,7 @@ UI_FONT = assets/selawik/selawk.ttf
 UI_FONT_LICENSE = assets/selawik/OFL.txt
 
 C_SOURCES = src/kernel/kernel.c \
+            src/kernel/desktop.c \
             src/kernel/acpi.c \
             src/kernel/pic.c \
             src/kernel/idt.c \

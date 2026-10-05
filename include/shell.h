@@ -11,5 +11,6 @@ void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_click);
 bool shell_is_fullscreen(void);
 bool shell_is_installer_boot(void);
 void shell_set_boot_info(uintptr_t boot_info_address);
+void shell_redraw(void);
 
 #endif

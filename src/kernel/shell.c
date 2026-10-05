@@ -2331,6 +2331,13 @@ bool shell_is_installer_boot(void) {
     return shell_installer_image != 0 && shell_installer_image_size != 0;
 }
 
+/* Repaint the plain shell screen (used when the desktop closes). */
+void shell_redraw(void) {
+    if (shell_installer_active || shell_editor_active) return;
+    shell_draw_screen();
+    shell_draw_prompt();
+}
+
 void shell_handle_key_event(const input_key_event_t* event) {
     if (!event || !event->is_pressed) return;
 

@@ -9,6 +9,7 @@ graphical installer and a small interactive kernel environment.
 - Limine BIOS and UEFI boot support
 - 64-bit kernel with interrupt, paging, task, and TSS foundations
 - Framebuffer UI and graphical installation flow
+- Desktop with a start menu and draggable About/shortcuts windows
 - PS/2 keyboard and mouse input
 - ATA PIO storage and a basic filesystem
 - AC'97 audio experiments
@@ -53,6 +54,10 @@ Only legacy IDE/ATA disks are currently supported by the installer.
 Audio uses an emulated Intel AC'97 device. If playback is unavailable, check
 that the virtual machine has audio output enabled and use the RockOS `audio`
 shell command to inspect AC'97 initialization and DMA playback status.
+
+Press `Ctrl+Alt+D` to open or close the desktop. Its start menu and desktop
+icons provide About and keyboard-shortcut windows; press `Esc` to close a
+window or return to the shell.
 
 Build the ISO without launching QEMU:
 

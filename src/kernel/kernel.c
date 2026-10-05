@@ -18,6 +18,7 @@
 #include "audio.h"
 #include "serial.h"
 #include "desktop.h"
+#include "tour.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -500,7 +501,9 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         input_key_event_t key_evt;
         if (keyboard_get_event(&key_evt)) {
             if (desktop_is_launch_hotkey(&key_evt)) {
-                desktop_start();
+                if (!shell_is_fullscreen() && !tour_is_active()) {
+                    desktop_start();
+                }
             } else {
                 shell_handle_key_event(&key_evt);
             }
