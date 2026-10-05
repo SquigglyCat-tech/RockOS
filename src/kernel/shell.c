@@ -111,6 +111,8 @@ static uint8_t shell_installer_field;
 static uint8_t shell_installer_language;
 static uint8_t shell_installer_region;
 static uint8_t shell_installer_keyboard;
+static uint8_t shell_installer_arch;
+static bool shell_installer_arch_locked;
 static shell_installer_button_t shell_installer_pressed_button;
 static uint8_t shell_installer_pressed_page;
 static const char* shell_installer_result_message;
@@ -757,18 +759,49 @@ static const char* const shell_installer_keyboards[] = {
 #define SHELL_INSTALLER_KEYBOARD_COUNT \
     (sizeof(shell_installer_keyboards) / sizeof(shell_installer_keyboards[0]))
 
+static const char* const shell_installer_arches[] = {
+    "64-bit (modern PCs)",
+    "32-bit (older PCs, v86)"
+};
+
+#define SHELL_INSTALLER_ARCH_COUNT \
+    (sizeof(shell_installer_arches) / sizeof(shell_installer_arches[0]))
+#define SHELL_INSTALLER_FIELD_COUNT 4
+
+/* CPUID 0x80000001:EDX bit 29 = long mode. Returns false on CPUs without
+   extended leaves (pre-AMD64 / very old 32-bit chips). */
+static bool shell_installer_cpu_has_long_mode(void) {
+    uint32_t max_extended;
+    uint32_t ebx;
+    uint32_t ecx;
+    uint32_t edx;
+    asm volatile("cpuid"
+        : "=a"(max_extended), "=b"(ebx), "=c"(ecx), "=d"(edx)
+        : "a"(0x80000000u), "c"(0));
+    if (max_extended < 0x80000001u) return false;
+    uint32_t features = 0;
+    asm volatile("cpuid"
+        : "=a"(features), "=b"(ebx), "=c"(ecx), "=d"(edx)
+        : "a"(0x80000001u), "c"(0));
+    (void)features;
+    return (edx & (1u << 29)) != 0;
+}
+
 static void shell_installer_draw_preference_row(uint32_t width,
     uint32_t height, uint8_t index, bool draw_label) {
-    static const char* labels[3] = {
+    static const char* labels[SHELL_INSTALLER_FIELD_COUNT] = {
         "Language to install:",
         "Time and currency format:",
-        "Keyboard or input method:"
+        "Keyboard or input method:",
+        "Architecture:"
     };
     const char* value = index == 0
         ? shell_installer_languages[shell_installer_language]
         : index == 1
             ? shell_installer_regions[shell_installer_region]
-            : shell_installer_keyboards[shell_installer_keyboard];
+            : index == 2
+                ? shell_installer_keyboards[shell_installer_keyboard]
+                : shell_installer_arches[shell_installer_arch];
     uint32_t center_x = width / 2;
     uint32_t option_x = center_x - 120;
     uint32_t option_width = width - option_x - 76;
@@ -956,14 +989,14 @@ static void shell_installer_draw_setup(void) {
         shell_ui_text(center_x - 144, 196, "INSTALLATION PREFERENCES",
             COLOR_WHITE, COLOR_BLACK);
         shell_ui_text(center_x - 306, 224,
-            "Choose your language, region, and keyboard layout.",
+            "Choose language, region, keyboard, and CPU mode.",
             COLOR_LIGHT_GRAY, COLOR_BLACK);
 
-        for (uint8_t index = 0; index < 3; index++) {
+        for (uint8_t index = 0; index < SHELL_INSTALLER_FIELD_COUNT; index++) {
             shell_installer_draw_preference_row(width, height, index, true);
         }
         shell_ui_text(72, height - 116,
-            "Choose your language and other preferences, then click Next.",
+            "32-bit runs on older PCs and v86; 64-bit needs long mode.",
             COLOR_LIGHT_GRAY, COLOR_BLACK);
         shell_ui_rect_t button_rect;
         shell_installer_button_rect(SHELL_INSTALLER_PAGE_PREFERENCES,
@@ -986,18 +1019,22 @@ static void shell_installer_draw_setup(void) {
     display_write_at(0, 0, "RockOS Setup");
     shell_installer_draw_wordmark();
     display_set_color(COLOR_WHITE, COLOR_BLACK);
-    display_write_at(6, 13, "Language to install:");
-    display_write_at(6, 15, "Time and currency format:");
-    display_write_at(6, 17, "Keyboard or input method:");
-    shell_installer_draw_option(13,
+    display_write_at(6, 12, "Language to install:");
+    display_write_at(6, 14, "Time and currency format:");
+    display_write_at(6, 16, "Keyboard or input method:");
+    display_write_at(6, 18, "Architecture:");
+    shell_installer_draw_option(12,
         shell_installer_field == 0,
         shell_installer_languages[shell_installer_language]);
-    shell_installer_draw_option(15,
+    shell_installer_draw_option(14,
         shell_installer_field == 1,
         shell_installer_regions[shell_installer_region]);
-    shell_installer_draw_option(17,
+    shell_installer_draw_option(16,
         shell_installer_field == 2,
         shell_installer_keyboards[shell_installer_keyboard]);
+    shell_installer_draw_option(18,
+        shell_installer_field == 3,
+        shell_installer_arches[shell_installer_arch]);
     display_set_color(COLOR_WHITE, COLOR_BLACK);
     display_write_at(12, 20,
         "Choose your preferences, then press Enter to continue.");
@@ -1494,6 +1531,10 @@ static void shell_installer_open(void) {
     shell_installer_language = 0;
     shell_installer_region = 0;
     shell_installer_keyboard = 0;
+    /* Default to 64-bit only when the CPU reports long mode; otherwise lock
+       to 32-bit so the user cannot pick an unbootable image. */
+    shell_installer_arch_locked = !shell_installer_cpu_has_long_mode();
+    shell_installer_arch = shell_installer_arch_locked ? 1 : 0;
     shell_installer_draw_setup();
 }
 
@@ -1506,10 +1547,16 @@ static void shell_installer_change_option(bool increment) {
         shell_installer_region = (uint8_t)((shell_installer_region +
             (increment ? 1 : SHELL_INSTALLER_REGION_COUNT - 1)) %
             SHELL_INSTALLER_REGION_COUNT);
-    } else {
+    } else if (shell_installer_field == 2) {
         shell_installer_keyboard = (uint8_t)((shell_installer_keyboard +
             (increment ? 1 : SHELL_INSTALLER_KEYBOARD_COUNT - 1)) %
             SHELL_INSTALLER_KEYBOARD_COUNT);
+    } else {
+        /* On CPUs without long mode the arch row is display-only. */
+        if (shell_installer_arch_locked) return;
+        shell_installer_arch = (uint8_t)((shell_installer_arch +
+            (increment ? 1 : SHELL_INSTALLER_ARCH_COUNT - 1)) %
+            SHELL_INSTALLER_ARCH_COUNT);
     }
 }
 
@@ -1696,7 +1743,8 @@ static void shell_installer_handle_key(const input_key_event_t* event) {
     if (shell_installer_page != SHELL_INSTALLER_PAGE_PREFERENCES) return;
     if (event->ascii == '\t') {
         uint8_t previous_field = shell_installer_field;
-        shell_installer_field = (uint8_t)((shell_installer_field + 1) % 3);
+        shell_installer_field = (uint8_t)((shell_installer_field + 1) %
+            SHELL_INSTALLER_FIELD_COUNT);
         shell_installer_redraw_preference_rows(previous_field);
     } else if (event->is_extended &&
         (event->scancode == 0x48 || event->scancode == 0x50)) {
@@ -1748,7 +1796,7 @@ void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_button_down) {
     uint32_t center_x = width / 2;
     uint32_t option_x = center_x - 120;
     uint32_t option_width = width - option_x - 76;
-    for (uint8_t index = 0; index < 3; index++) {
+    for (uint8_t index = 0; index < SHELL_INSTALLER_FIELD_COUNT; index++) {
         uint32_t row_y = height / 2 - 40 + (uint32_t)index * 64;
         if (y < row_y - 3 || y >= row_y + 43 ||
             x < 72 || x >= option_x + option_width) {

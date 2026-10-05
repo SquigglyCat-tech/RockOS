@@ -7,14 +7,24 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define ATA_DATA_PORT       0x1F0u
-#define ATA_SECTOR_COUNT    0x1F2u
-#define ATA_LBA_LOW         0x1F3u
-#define ATA_LBA_MID         0x1F4u
-#define ATA_LBA_HIGH        0x1F5u
-#define ATA_DRIVE_SELECT    0x1F6u
-#define ATA_STATUS_COMMAND  0x1F7u
-#define ATA_ALT_STATUS_CTRL 0x3F6u
+/* v86 / QEMU compatible: both channels, legacy probe fallback. */
+#define ATA_PRIMARY_DATA      0x1F0u
+#define ATA_PRIMARY_SECTORS   0x1F2u
+#define ATA_PRIMARY_LBA_LO    0x1F3u
+#define ATA_PRIMARY_LBA_MID   0x1F4u
+#define ATA_PRIMARY_LBA_HI    0x1F5u
+#define ATA_PRIMARY_DRIVE     0x1F6u
+#define ATA_PRIMARY_CMD       0x1F7u
+#define ATA_PRIMARY_CTRL      0x3F6u
+
+#define ATA_SECONDARY_DATA    0x170u
+#define ATA_SECONDARY_SECTORS 0x172u
+#define ATA_SECONDARY_LBA_LO  0x173u
+#define ATA_SECONDARY_LBA_MID 0x174u
+#define ATA_SECONDARY_LBA_HI  0x175u
+#define ATA_SECONDARY_DRIVE   0x176u
+#define ATA_SECONDARY_CMD     0x177u
+#define ATA_SECONDARY_CTRL    0x376u
 
 #define ATA_STATUS_ERROR 0x01u
 #define ATA_STATUS_DRQ   0x08u
@@ -32,12 +42,38 @@
 #define ATA_LBA28_SECTOR_LIMIT 0x10000000ULL
 
 typedef struct {
+    uint16_t data;
+    uint16_t sectors;
+    uint16_t lba_lo;
+    uint16_t lba_mid;
+    uint16_t lba_hi;
+    uint16_t drive;
+    uint16_t cmd;
+    uint16_t ctrl;
+} ata_channel_t;
+
+static const ata_channel_t ata_channels[2] = {
+    { ATA_PRIMARY_DATA, ATA_PRIMARY_SECTORS, ATA_PRIMARY_LBA_LO,
+      ATA_PRIMARY_LBA_MID, ATA_PRIMARY_LBA_HI, ATA_PRIMARY_DRIVE,
+      ATA_PRIMARY_CMD, ATA_PRIMARY_CTRL },
+    { ATA_SECONDARY_DATA, ATA_SECONDARY_SECTORS, ATA_SECONDARY_LBA_LO,
+      ATA_SECONDARY_LBA_MID, ATA_SECONDARY_LBA_HI, ATA_SECONDARY_DRIVE,
+      ATA_SECONDARY_CMD, ATA_SECONDARY_CTRL },
+};
+
+static const char* const ata_drive_names[4] = {
+    "ata0-primary-master", "ata0-primary-slave",
+    "ata1-secondary-master", "ata1-secondary-slave",
+};
+
+typedef struct {
     block_device_t block;
+    uint8_t channel;
     uint8_t drive_select;
     bool ready;
 } ata_drive_t;
 
-static ata_drive_t ata_drives[2];
+static ata_drive_t ata_drives[4];
 static uint16_t identify_words[256];
 static uint8_t test_write_buffer[BLOCK_SECTOR_SIZE];
 static uint8_t test_read_buffer[BLOCK_SECTOR_SIZE];
@@ -45,16 +81,20 @@ static size_t ata_device_count;
 static bool ata_busy;
 static block_result_t initialization_result = BLOCK_RESULT_NOT_INITIALIZED;
 
-static void ata_delay_400ns(void) {
-    (void)inb(ATA_ALT_STATUS_CTRL);
-    (void)inb(ATA_ALT_STATUS_CTRL);
-    (void)inb(ATA_ALT_STATUS_CTRL);
-    (void)inb(ATA_ALT_STATUS_CTRL);
+static void ata_delay_400ns(uint8_t channel) {
+    uint16_t ctrl = ata_channels[channel & 1u].ctrl;
+    (void)inb(ctrl);
+    (void)inb(ctrl);
+    (void)inb(ctrl);
+    (void)inb(ctrl);
 }
 
-static block_result_t ata_wait_status(bool require_data) {
+static block_result_t ata_wait_status(uint8_t channel, bool require_data) {
+    uint16_t cmd = ata_channels[channel & 1u].cmd;
     for (uint32_t attempt = 0; attempt < ATA_POLL_LIMIT; attempt++) {
-        uint8_t status = inb(ATA_STATUS_COMMAND);
+        uint8_t status = inb(cmd);
+        /* Floating bus (no controller/drive): 0xFF. v86 secondary with
+           nothing attached can also read 0x00. Both mean "no device". */
         if (status == 0 || status == 0xFFu) return BLOCK_RESULT_NO_DEVICE;
         if (status & (ATA_STATUS_ERROR | ATA_STATUS_FAULT)) {
             return BLOCK_RESULT_DEVICE_ERROR;
@@ -87,16 +127,17 @@ static block_result_t ata_select_lba(const ata_drive_t* drive, uint32_t lba,
         return BLOCK_RESULT_INVALID_ARGUMENT;
     }
 
-    outb(ATA_DRIVE_SELECT,
+    const ata_channel_t* ch = &ata_channels[drive->channel & 1u];
+    outb(ch->drive,
         (uint8_t)(drive->drive_select | ((lba >> 24) & 0x0Fu)));
-    ata_delay_400ns();
-    block_result_t result = ata_wait_status(false);
+    ata_delay_400ns(drive->channel);
+    block_result_t result = ata_wait_status(drive->channel, false);
     if (result != BLOCK_RESULT_OK) return result;
 
-    outb(ATA_SECTOR_COUNT, (uint8_t)sector_count);
-    outb(ATA_LBA_LOW, (uint8_t)lba);
-    outb(ATA_LBA_MID, (uint8_t)(lba >> 8));
-    outb(ATA_LBA_HIGH, (uint8_t)(lba >> 16));
+    outb(ch->sectors, (uint8_t)sector_count);
+    outb(ch->lba_lo, (uint8_t)lba);
+    outb(ch->lba_mid, (uint8_t)(lba >> 8));
+    outb(ch->lba_hi, (uint8_t)(lba >> 16));
     return BLOCK_RESULT_OK;
 }
 
@@ -106,6 +147,7 @@ static block_result_t ata_read(void* context, uint64_t lba,
     if (!drive || !drive->ready) return BLOCK_RESULT_NOT_INITIALIZED;
     if (!ata_acquire()) return BLOCK_RESULT_BUSY;
 
+    const ata_channel_t* ch = &ata_channels[drive->channel & 1u];
     uint8_t* bytes = (uint8_t*)buffer;
     block_result_t result = BLOCK_RESULT_OK;
     result = ata_select_lba(drive, (uint32_t)lba, sector_count);
@@ -114,14 +156,14 @@ static block_result_t ata_read(void* context, uint64_t lba,
         return result;
     }
 
-    outb(ATA_STATUS_COMMAND, ATA_COMMAND_READ);
+    outb(ch->cmd, ATA_COMMAND_READ);
     for (uint32_t sector = 0; sector < sector_count; sector++) {
-        result = ata_wait_status(true);
+        result = ata_wait_status(drive->channel, true);
         if (result != BLOCK_RESULT_OK) break;
 
         size_t byte_offset = (size_t)sector * BLOCK_SECTOR_SIZE;
         for (uint32_t word = 0; word < ATA_WORDS_PER_SECTOR; word++) {
-            uint16_t value = inw(ATA_DATA_PORT);
+            uint16_t value = inw(ch->data);
             bytes[byte_offset + word * 2] = (uint8_t)value;
             bytes[byte_offset + word * 2 + 1] = (uint8_t)(value >> 8);
         }
@@ -129,7 +171,7 @@ static block_result_t ata_read(void* context, uint64_t lba,
     }
 
     if (result == BLOCK_RESULT_OK) {
-        result = ata_wait_status(false);
+        result = ata_wait_status(drive->channel, false);
     }
     ata_release();
     return result;
@@ -141,6 +183,7 @@ static block_result_t ata_write(void* context, uint64_t lba,
     if (!drive || !drive->ready) return BLOCK_RESULT_NOT_INITIALIZED;
     if (!ata_acquire()) return BLOCK_RESULT_BUSY;
 
+    const ata_channel_t* ch = &ata_channels[drive->channel & 1u];
     const uint8_t* bytes = (const uint8_t*)buffer;
     block_result_t result = BLOCK_RESULT_OK;
     result = ata_select_lba(drive, (uint32_t)lba, sector_count);
@@ -149,25 +192,31 @@ static block_result_t ata_write(void* context, uint64_t lba,
         return result;
     }
 
-    outb(ATA_STATUS_COMMAND, ATA_COMMAND_WRITE);
+    outb(ch->cmd, ATA_COMMAND_WRITE);
     for (uint32_t sector = 0; sector < sector_count; sector++) {
-        result = ata_wait_status(true);
+        result = ata_wait_status(drive->channel, true);
         if (result != BLOCK_RESULT_OK) break;
 
         size_t byte_offset = (size_t)sector * BLOCK_SECTOR_SIZE;
         for (uint32_t word = 0; word < ATA_WORDS_PER_SECTOR; word++) {
             uint16_t value = (uint16_t)bytes[byte_offset + word * 2] |
                 ((uint16_t)bytes[byte_offset + word * 2 + 1] << 8);
-            outw(ATA_DATA_PORT, value);
+            outw(ch->data, value);
         }
 
     }
 
     if (result == BLOCK_RESULT_OK) {
-        result = ata_wait_status(false);
+        /* Wait for completion, then best-effort flush. Some emulators
+           (including v86) are picky about FLUSH timing, so never fail
+           an otherwise good write because the flush handshake is odd. */
+        result = ata_wait_status(drive->channel, false);
         if (result == BLOCK_RESULT_OK) {
-            outb(ATA_STATUS_COMMAND, ATA_COMMAND_FLUSH);
-            result = ata_wait_status(false);
+            outb(ch->cmd, ATA_COMMAND_FLUSH);
+            block_result_t flush = ata_wait_status(drive->channel, false);
+            if (flush == BLOCK_RESULT_NO_DEVICE) flush = BLOCK_RESULT_OK;
+            if (flush != BLOCK_RESULT_TIMEOUT) result = flush;
+            else result = BLOCK_RESULT_OK;
         }
     }
 
@@ -175,46 +224,56 @@ static block_result_t ata_write(void* context, uint64_t lba,
     return result;
 }
 
-static block_result_t ata_identify(ata_drive_t* drive, uint8_t drive_number) {
+static block_result_t ata_identify(ata_drive_t* drive, uint8_t channel,
+    uint8_t drive_number) {
     drive->ready = false;
     drive->block.sector_count = 0;
+    drive->channel = (uint8_t)(channel & 1u);
     drive->drive_select = (uint8_t)(0xE0u | (drive_number << 4));
+    const ata_channel_t* ch = &ata_channels[drive->channel];
 
-    outb(ATA_ALT_STATUS_CTRL, ATA_CONTROL_NIEN);
-    outb(ATA_DRIVE_SELECT, (uint8_t)(0xA0u | (drive_number << 4)));
-    ata_delay_400ns();
+    outb(ch->ctrl, ATA_CONTROL_NIEN);
+    outb(ch->drive, (uint8_t)(0xA0u | (drive_number << 4)));
+    ata_delay_400ns(drive->channel);
 
-    uint8_t status = inb(ATA_STATUS_COMMAND);
+    uint8_t status = inb(ch->cmd);
     if (status == 0 || status == 0xFFu) return BLOCK_RESULT_NO_DEVICE;
-    block_result_t result = ata_wait_status(false);
+
+    /* Tolerate a stale BSY from a previous select on slow emulators:
+       wait for not-busy, but treat float/no-device as empty. */
+    block_result_t result = ata_wait_status(drive->channel, false);
+    if (result == BLOCK_RESULT_NO_DEVICE) return BLOCK_RESULT_NO_DEVICE;
+    if (result == BLOCK_RESULT_TIMEOUT) return BLOCK_RESULT_NO_DEVICE;
     if (result != BLOCK_RESULT_OK) return result;
 
-    outb(ATA_SECTOR_COUNT, 0);
-    outb(ATA_LBA_LOW, 0);
-    outb(ATA_LBA_MID, 0);
-    outb(ATA_LBA_HIGH, 0);
-    outb(ATA_STATUS_COMMAND, ATA_COMMAND_IDENTIFY);
+    outb(ch->sectors, 0);
+    outb(ch->lba_lo, 0);
+    outb(ch->lba_mid, 0);
+    outb(ch->lba_hi, 0);
+    outb(ch->cmd, ATA_COMMAND_IDENTIFY);
 
     bool data_ready = false;
     for (uint32_t attempt = 0; attempt < ATA_POLL_LIMIT; attempt++) {
-        status = inb(ATA_STATUS_COMMAND);
+        status = inb(ch->cmd);
         if (status == 0 || status == 0xFFu) return BLOCK_RESULT_NO_DEVICE;
         if (status & ATA_STATUS_BUSY) continue;
-        if (inb(ATA_LBA_MID) != 0 || inb(ATA_LBA_HIGH) != 0) {
-            return BLOCK_RESULT_UNSUPPORTED;
+        /* Nonzero LBA mid/high signature after IDENTIFY = ATAPI (packet)
+           device, typically the CD-ROM. Skip it, keep probing others. */
+        if (inb(ch->lba_mid) != 0 || inb(ch->lba_hi) != 0) {
+            return BLOCK_RESULT_NO_DEVICE;
         }
         if (status & (ATA_STATUS_ERROR | ATA_STATUS_FAULT)) {
-            return BLOCK_RESULT_DEVICE_ERROR;
+            return BLOCK_RESULT_NO_DEVICE;
         }
         if (status & ATA_STATUS_DRQ) {
             data_ready = true;
             break;
         }
     }
-    if (!data_ready) return BLOCK_RESULT_TIMEOUT;
+    if (!data_ready) return BLOCK_RESULT_NO_DEVICE;
 
     for (uint32_t word = 0; word < 256; word++) {
-        identify_words[word] = inw(ATA_DATA_PORT);
+        identify_words[word] = inw(ch->data);
     }
 
     if (!(identify_words[49] & (1u << 9))) return BLOCK_RESULT_UNSUPPORTED;
@@ -224,8 +283,8 @@ static block_result_t ata_identify(ata_drive_t* drive, uint8_t drive_number) {
         return BLOCK_RESULT_UNSUPPORTED;
     }
 
-    drive->block.name = drive_number == 0
-        ? "ata0-primary-master" : "ata0-primary-slave";
+    size_t slot = (size_t)drive->channel * 2 + (drive_number & 1u);
+    drive->block.name = ata_drive_names[slot & 3u];
     drive->block.sector_size = BLOCK_SECTOR_SIZE;
     drive->block.sector_count = sectors;
     drive->block.context = drive;
@@ -238,31 +297,37 @@ static block_result_t ata_identify(ata_drive_t* drive, uint8_t drive_number) {
 block_result_t storage_init(void) {
     ata_busy = false;
     ata_device_count = 0;
-    ata_drives[0].ready = false;
-    ata_drives[0].block.sector_count = 0;
-    ata_drives[1].ready = false;
-    ata_drives[1].block.sector_count = 0;
+    for (size_t i = 0; i < 4; i++) {
+        ata_drives[i].ready = false;
+        ata_drives[i].block.sector_count = 0;
+    }
     initialization_result = BLOCK_RESULT_NOT_INITIALIZED;
 
-    if (!pci_was_scanned()) {
-        initialization_result = BLOCK_RESULT_NOT_INITIALIZED;
-        return initialization_result;
+    /* v86 presents a PIIX3 IDE controller (class 01/01, prog_if 0x80+),
+       QEMU does too. Never gate on prog_if: always try the legacy
+       0x1F0/0x170 ports directly. PCI scan is only a hint now. */
+    if (pci_was_scanned()) {
+        (void)pci_find_by_class(0x01u, 0x01u);
     }
 
-    const pci_device_t* ide = pci_find_by_class(0x01u, 0x01u);
-    if (!ide) {
-        initialization_result = BLOCK_RESULT_NO_DEVICE;
-        return initialization_result;
+    /* Probe order keeps old names stable: primary master first, then
+       primary slave, then secondary master/slave. */
+    static const uint8_t probe_order[4][2] = {
+        { 0, 0 }, { 0, 1 }, { 1, 0 }, { 1, 1 },
+    };
+    initialization_result = BLOCK_RESULT_NO_DEVICE;
+    for (size_t i = 0; i < 4; i++) {
+        uint8_t channel = probe_order[i][0];
+        uint8_t slave = probe_order[i][1];
+        size_t slot = (size_t)channel * 2 + slave;
+        block_result_t r = ata_identify(&ata_drives[slot], channel, slave);
+        if (r == BLOCK_RESULT_OK) {
+            ata_device_count++;
+            if (initialization_result != BLOCK_RESULT_OK) {
+                initialization_result = BLOCK_RESULT_OK;
+            }
+        }
     }
-    if (ide->prog_if & 0x01u) {
-        initialization_result = BLOCK_RESULT_UNSUPPORTED;
-        return initialization_result;
-    }
-
-    initialization_result = ata_identify(&ata_drives[0], 0);
-    if (initialization_result == BLOCK_RESULT_OK) ata_device_count++;
-    block_result_t slave_result = ata_identify(&ata_drives[1], 1);
-    if (slave_result == BLOCK_RESULT_OK) ata_device_count++;
     return initialization_result;
 }
 
@@ -279,7 +344,7 @@ size_t storage_get_device_count(void) {
 }
 
 const block_device_t* storage_get_device_at(size_t index) {
-    for (size_t drive_index = 0; drive_index < 2; drive_index++) {
+    for (size_t drive_index = 0; drive_index < 4; drive_index++) {
         if (!ata_drives[drive_index].ready) continue;
         if (index == 0) return &ata_drives[drive_index].block;
         index--;

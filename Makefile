@@ -1,16 +1,23 @@
-TARGET = x86_64-elf
+TARGET64 = x86_64-elf
+TARGET32 = i686-elf
 AUDIO_BOOT_TEST_TONE ?= 1
 PYTHON ?= $(if $(wildcard /c/Python314/python.exe),/c/Python314/python.exe,python)
 LIMINE_TOOL ?= $(if $(wildcard /c/opt/limine/limine-binary/limine-tool-windows-x86/limine.exe),/c/opt/limine/limine-binary/limine-tool-windows-x86/limine.exe,limine)
 LIMINE_DATA_DIR ?= $(if $(wildcard /c/opt/limine/limine-binary),/c/opt/limine/limine-binary,$(shell "$(LIMINE_TOOL)" --print-datadir))
 
-CC  = $(TARGET)-gcc
-LD  = $(TARGET)-ld
-ASM = $(TARGET)-gcc
+CC64  = $(TARGET64)-gcc
+LD64  = $(TARGET64)-ld
+ASM64 = $(TARGET64)-gcc
 
-CFLAGS = -O2 -ffreestanding -mcmodel=large -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -c
+CC32  = $(TARGET32)-gcc
+LD32  = $(TARGET32)-ld
+ASM32 = $(TARGET32)-gcc
+
+CFLAGS64 = -O2 -ffreestanding -mcmodel=large -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_64=1 -c
+CFLAGS32 = -O2 -ffreestanding -march=i686 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_32=1 -c
 ASMFLAGS = -Iinclude -c
-LDFLAGS = -m elf_x86_64 -T linker.ld
+LDFLAGS64 = -m elf_x86_64 -T linker.ld
+LDFLAGS32 = -m elf_i386 -T linker32.ld
 POWERSHELL ?= powershell.exe
 UI_ASSETS = src/drivers/ui_assets.h
 UI_FONT = assets/selawik/selawk.ttf
@@ -41,15 +48,29 @@ C_SOURCES = src/kernel/kernel.c \
 			src/kernel/tour.c \
 			src/drivers/audio.c
 
-ASM_SOURCES = src/arch/x86_64/boot.S \
+ASM64_SOURCES = src/arch/x86_64/boot.S \
 			  src/arch/x86_64/gdt_load.S \
 			  src/arch/x86_64/isr.S \
 			  src/arch/x86_64/ring3.S \
 			  src/arch/x86_64/context_switch.S \
 			  src/drivers/error_sound.S
 
-OBJS = $(ASM_SOURCES:.S=.o) $(C_SOURCES:.c=.o)
+# 32-bit arch sources land in src/arch/i386/ as the port progresses
+# (boot32.S, gdt32_load.S, isr32.S, ring3_32.S, context32_switch.S).
+# They are listed here so `make ARCH=32` starts compiling them; add the
+# files incrementally. error_sound.S is shared (raw PCM + size symbols).
+ASM32_SOURCES = src/arch/i386/boot32.S \
+			  src/arch/i386/gdt32_load.S \
+			  src/arch/i386/isr32.S \
+			  src/arch/i386/ring3_32.S \
+			  src/arch/i386/context32_switch.S \
+			  src/drivers/error_sound.S
 
+OBJS64 = $(ASM64_SOURCES:.S=.o) $(C_SOURCES:.c=.o)
+OBJS32 = $(ASM32_SOURCES:.S=.o) $(C_SOURCES:.c=.32.o)
+
+KERNEL64_BIN = rockos64.bin
+KERNEL32_BIN = rockos32.bin
 KERNEL_BIN = rockos.bin
 ISO_IMAGE = rockos.iso
 DATA_DISK = rockos-data.img
@@ -61,13 +82,25 @@ ISO_BOOT_DIR = $(ISO_DIR)/boot
 
 all: $(ISO_IMAGE)
 
+# Default 64-bit objects.
 %.o: %.c
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC64) $(CFLAGS64) $< -o $@
 
 %.o: %.S
-	$(ASM) $(ASMFLAGS) $< -o $@
+	$(ASM64) $(ASMFLAGS) $< -o $@
+
+# Parallel 32-bit objects (foo.c -> foo.32.o) so both kernels can build
+# from the same tree without clobbering each other.
+%.32.o: %.c
+	$(CC32) $(CFLAGS32) $< -o $@
+
+src/arch/i386/%.o: src/arch/i386/%.S
+	$(ASM32) $(ASMFLAGS) $< -o $@
 
 src/drivers/error_sound.o: assets/error_48000_stereo_s16le.pcm
+
+src/drivers/error_sound.32.o: assets/error_48000_stereo_s16le.pcm
+	$(ASM32) $(ASMFLAGS) src/drivers/error_sound.S -o $@
 
 $(UI_ASSETS): $(UI_FONT) $(UI_FONT_LICENSE) assets/rockos-logo-outlined.png scripts/generate_ui_assets.ps1
 	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass \

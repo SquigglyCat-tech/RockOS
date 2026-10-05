@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RockOS on v86 (IDE/ATA)</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #111; color: #eee;
+    font-family: system-ui, sans-serif; }
+  #page { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  #screen_container { background: #000; }
+  #screen_container canvas { width: 100%; display: block; background: #000; }
+  #controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  button { padding: 8px 12px; font-size: 14px; cursor: pointer; }
+  #status { white-space: pre-wrap; font-family: monospace; font-size: 13px;
+    background: #1b1b1b; padding: 10px; border: 1px solid #333; }
+  a { color: #9cf; }
+</style>
+</head>
+<body>
+<div id="page">
+  <h1>RockOS on v86 (BIOS + IDE/ATA)</h1>
+  <p>
+    RockOS boots with SeaBIOS over BIOS, uses Multiboot1, and talks to disks
+    through legacy IDE/ATA PIO ports (<code>0x1F0</code>/<code>0x170</code>).
+    That matches v86's default PC emulation. UEFI is not used here.
+  </p>
+
+  <div id="controls">
+    <input type="file" id="iso_file" accept=".iso" />
+    <input type="file" id="hda_file" />
+    <button id="start_btn">Start with selected files</button>
+    <button id="reset_btn">Reset</button>
+  </div>
+
+  <div id="screen_container"></div>
+  <div style="margin-top:8px;">
+    <textarea rows="4" cols="80" id="serial_container"
+      placeholder="serial0 output"></textarea>
+  </div>
+  <h2>Status</h2>
+  <div id="status">IMPORTANT: v86 cannot run this build yet. v86 emulates a
+32-bit Pentium-class PC with no 64-bit/long-mode support, while RockOS is a
+64-bit long-mode kernel (see src/arch/x86_64/boot.S). The page below is kept
+for QEMU/real-hardware reference and for after a 32-bit port exists.
+Pick files above, then Start. Defaults below use
+rockos.iso and rockos-data.img from this folder.</div>
+  <p>
+    Recommended v86 settings are already in this page: SeaBIOS +
+    <code>cdrom: rockos.iso</code>, <code>hda: rockos-data.img</code>,
+    boot order <code>231</code> (CD first, then hard disk), 128MB RAM.
+    Keep the hard-disk image persistent if you want RockFS to survive
+    reboots.
+  </p>
+</div>
+
+<script src="https://copy.sh/v86/build/libv86.js"></script>
+<script>
+"use strict";
+
+const status_box = document.getElementById("status");
+function log(text) {
+    status_box.textContent += "\n" + text;
+}
+
+let emulator = null;
+
+async function file_as_buffer(file) {
+    const data = await file.arrayBuffer();
+    return new Uint8Array(data);
+}
+
+async function url_as_buffer(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error("cannot fetch " + url + ": HTTP " + response.status);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+}
+
+async function start_emulator() {
+    if (emulator) {
+        try { emulator.stop(); } catch (e) { log("stop: " + e); }
+        emulator = null;
+    }
+
+    const iso_input = document.getElementById("iso_file");
+    const hda_input = document.getElementById("hda_file");
+
+    // v86 boots raw CD ISO bytes through its IDE CD-ROM on the secondary
+    // channel, and the first hard disk through the primary IDE channel.
+    // Those are exactly the legacy ports RockOS probes.
+    let cdrom;
+    let hda;
+    try {
+        cdrom = iso_input.files.length
+            ? await file_as_buffer(iso_input.files[0])
+            : await url_as_buffer("rockos.iso");
+    } catch (e) {
+        log("CD ISO problem: " + e + " (select rockos.iso above)");
+        return;
+    }
+    try {
+        hda = hda_input.files.length
+            ? await file_as_buffer(hda_input.files[0])
+            : await url_as_buffer("rockos-data.img");
+    } catch (e) {
+        log("Hard disk note: " + e);
+        log("Continuing with a fresh 16MB disk image.");
+        hda = new Uint8Array(16 * 1024 * 1024);
+    }
+
+    status_box.textContent = "Starting RockOS on v86 ...";
+    emulator = new V86({
+        screen_container: document.getElementById("screen_container"),
+        serial_container: document.getElementById("serial_container"),
+        bios: { url: "https://copy.sh/v86/bios/seabios.bin" },
+        vga_bios: { url: "https://copy.sh/v86/bios/vgabios.bin" },
+        cdrom: { buffer: cdrom },
+        hda: { buffer: hda },
+        boot_order: 0x231,
+        memory_size: 128 * 1024 * 1024,
+        vga_memory_size: 8 * 1024 * 1024,
+        autostart: true,
+    });
+
+    emulator.add_listener("emulator-ready", function() {
+        log("v86 ready: BIOS should now boot rockos.iso from IDE CD-ROM.");
+        log("Expected RockOS lines: framebuffer enabled, ATA storage ready.");
+    });
+    emulator.add_listener("serial0-output-byte", function(byte) {
+        // Serial is already mirrored into #serial_container; this hook is
+        // useful if you later want automated boot checks.
+    });
+}
+
+document.getElementById("start_btn").addEventListener("click", function() {
+    start_emulator().catch(function(e) { log("start failed: " + e); });
+});
+document.getElementById("reset_btn").addEventListener("click", function() {
+    if (emulator) emulator.restart();
+});
+</script>
+</body>
+</html>
