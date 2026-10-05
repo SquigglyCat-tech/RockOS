@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "idt.h"
 #include "io.h"
@@ -87,44 +88,120 @@ static void put_line(const char* label, uint64_t v) {
     display_putchar('\n');
 }
 
+static void draw_hex_field(uint32_t x, uint32_t y, const char* label,
+    uint64_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    char text[48];
+    size_t length = 0;
+    while (*label && length < sizeof(text) - 19) {
+        text[length++] = *label++;
+    }
+    text[length++] = '0';
+    text[length++] = 'x';
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        text[length++] = digits[(value >> shift) & 0x0F];
+    }
+    text[length] = '\0';
+    display_draw_text_ui(x, y, text, COLOR_LIGHT_GRAY);
+}
+
+static bool draw_graphical_panic(const interrupt_frame_t* f) {
+    uint32_t width;
+    uint32_t height;
+    if (!display_get_framebuffer_size(&width, &height) ||
+        width < 600 || height < 520) {
+        return false;
+    }
+
+    display_fill_rect_rgb(0, 0, width, height, 0, 0, 0);
+    display_fill_rect_rgb(0, 0, width, 6, 220, 48, 58);
+    display_fill_rect_rgb(32, 32, width - 64, height - 64,
+        17, 18, 22);
+    display_fill_rect_rgb(32, 32, 6, height - 64, 220, 48, 58);
+    display_draw_text_ui(56, 52, "ROCKOS  /  KERNEL PANIC",
+        COLOR_LIGHT_RED);
+    display_draw_text_ui(56, 88, "SYSTEM HALTED", COLOR_WHITE);
+    display_draw_text_ui(56, 122,
+        "A fatal CPU exception stopped execution.", COLOR_LIGHT_GRAY);
+
+    display_fill_rect_rgb(56, 164, width - 112, 64, 35, 20, 23);
+    display_draw_text_ui(72, 186, "EXCEPTION", COLOR_LIGHT_RED);
+    display_draw_text_ui(190, 186,
+        f->vector < EXCEPTION_NAME_COUNT
+            ? exception_names[f->vector] : "Reserved",
+        COLOR_WHITE);
+
+    uint32_t right_x = width / 2;
+    uint32_t y = 260;
+    draw_hex_field(56, y, "VECTOR  ", f->vector);
+    draw_hex_field(right_x, y, "ERROR CODE  ", f->error_code);
+    y += 32;
+    draw_hex_field(56, y, "RIP  ", f->rip);
+    draw_hex_field(right_x, y, "CS  ", f->cs);
+    y += 32;
+    draw_hex_field(56, y, "RFLAGS  ", f->rflags);
+    draw_hex_field(right_x, y, "RSP  ", f->rsp);
+    y += 32;
+    draw_hex_field(56, y, "RAX  ", f->rax);
+    draw_hex_field(right_x, y, "RBX  ", f->rbx);
+    y += 32;
+    draw_hex_field(56, y, "RCX  ", f->rcx);
+    draw_hex_field(right_x, y, "RDX  ", f->rdx);
+    if (f->vector == 14 && y + 32 < height - 80) {
+        uint64_t cr2;
+        asm volatile ("mov %%cr2, %0" : "=r"(cr2));
+        y += 32;
+        draw_hex_field(56, y, "CR2  ", cr2);
+    }
+
+    display_fill_rect_rgb(56, height - 92, width - 112, 1,
+        70, 72, 78);
+    display_draw_text_ui(56, height - 72,
+        "Restart the virtual machine to continue.", COLOR_LIGHT_GRAY);
+    display_present();
+    return true;
+}
+
 static void exception_panic(const interrupt_frame_t* f) {
     asm volatile ("cli");
 
-    display_set_color(COLOR_WHITE, COLOR_BLUE);
+    display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     display_clear();
-    display_puts("ROCKOS - FATAL SYSTEM ERROR\n");
-    display_puts("===========================\n\n");
-    display_puts("A fatal CPU exception stopped the kernel.\n");
+    if (!draw_graphical_panic(f)) {
+        display_set_color(COLOR_LIGHT_RED, COLOR_BLACK);
+        display_puts("!!! ROCKOS / SYSTEM HALTED !!!\n\n");
+        display_puts("A fatal CPU exception stopped execution.\n");
 
-    display_set_color(COLOR_YELLOW, COLOR_BLUE);
-    display_puts("Type:       ");
-    if (f->vector < EXCEPTION_NAME_COUNT) {
-        display_puts(exception_names[f->vector]);
-    } else {
-        display_puts("Reserved");
+        display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
+        display_puts("Type:       ");
+        if (f->vector < EXCEPTION_NAME_COUNT) {
+            display_puts(exception_names[f->vector]);
+        } else {
+            display_puts("Reserved");
+        }
+        display_putchar('\n');
+
+        put_line("Vector:     ", f->vector);
+        put_line("Error code: ", f->error_code);
+        put_line("RIP:        ", f->rip);
+        put_line("CS:         ", f->cs);
+        put_line("RFLAGS:     ", f->rflags);
+        put_line("RSP:        ", f->rsp);
+
+        if (f->vector == 14) {
+            uint64_t cr2;
+            asm volatile ("mov %%cr2, %0" : "=r"(cr2));
+            put_line("CR2:        ", cr2);
+        }
+
+        put_line("RAX:        ", f->rax);
+        put_line("RBX:        ", f->rbx);
+        put_line("RCX:        ", f->rcx);
+        put_line("RDX:        ", f->rdx);
+
+        display_puts("\nSystem halted to protect kernel state.\n");
+        display_puts("Restart the virtual machine to continue.\n");
     }
-    display_putchar('\n');
-
-    put_line("Vector:     ", f->vector);
-    put_line("Error code: ", f->error_code);
-    put_line("RIP:        ", f->rip);
-    put_line("CS:         ", f->cs);
-    put_line("RFLAGS:     ", f->rflags);
-    put_line("RSP:        ", f->rsp);
-
-    if (f->vector == 14) {
-        uint64_t cr2;
-        asm volatile ("mov %%cr2, %0" : "=r"(cr2));
-        put_line("CR2:        ", cr2);
-    }
-
-    put_line("RAX:        ", f->rax);
-    put_line("RBX:        ", f->rbx);
-    put_line("RCX:        ", f->rcx);
-    put_line("RDX:        ", f->rdx);
-
-    display_puts("\nThe system has halted to protect kernel state.\n");
-    display_puts("Restart the virtual machine to continue.\n");
     display_present();
 
     for (;;) {

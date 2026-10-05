@@ -86,12 +86,13 @@ static block_result_t ata_select_lba(const ata_drive_t* drive, uint32_t lba,
     if (sector_count == 0 || sector_count > BLOCK_MAX_TRANSFER_SECTORS) {
         return BLOCK_RESULT_INVALID_ARGUMENT;
     }
-    block_result_t result = ata_wait_status(false);
-    if (result != BLOCK_RESULT_OK) return result;
 
     outb(ATA_DRIVE_SELECT,
         (uint8_t)(drive->drive_select | ((lba >> 24) & 0x0Fu)));
     ata_delay_400ns();
+    block_result_t result = ata_wait_status(false);
+    if (result != BLOCK_RESULT_OK) return result;
+
     outb(ATA_SECTOR_COUNT, (uint8_t)sector_count);
     outb(ATA_LBA_LOW, (uint8_t)lba);
     outb(ATA_LBA_MID, (uint8_t)(lba >> 8));

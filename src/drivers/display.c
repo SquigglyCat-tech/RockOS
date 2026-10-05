@@ -17,9 +17,9 @@
 #define CELL_WIDTH 12U
 #define CELL_HEIGHT 24U
 #define FRAMEBUFFER_MAX_BYTES (32U * 1024U * 1024U)
-#define MOUSE_CURSOR_WIDTH 20U
-#define MOUSE_CURSOR_ARROW_WIDTH 16U
-#define MOUSE_CURSOR_HEIGHT 24U
+#define MOUSE_CURSOR_WIDTH 18U
+#define MOUSE_CURSOR_ARROW_WIDTH 12U
+#define MOUSE_CURSOR_HEIGHT 18U
 
 static const uint8_t font_alphanumeric[36][5] = {
     {0x7E,0x11,0x11,0x11,0x7E}, {0x7F,0x49,0x49,0x49,0x36},
@@ -214,10 +214,9 @@ static void put_pixel_overlay(uint32_t x, uint32_t y, uint32_t color) {
 
 static void draw_pixel_mouse_cursor(void) {
     static const uint16_t arrow[MOUSE_CURSOR_HEIGHT] = {
-        0x8000, 0xC000, 0xE000, 0xF000, 0xF800, 0xFC00,
-        0xFE00, 0xFF00, 0xFF80, 0xFFC0, 0xFFE0, 0xFFF0,
-        0xFFF8, 0xFFFC, 0xFFE0, 0xEFC0, 0xC7C0, 0x03E0,
-        0x03F0, 0x01F0, 0x01F8, 0x00F8, 0x0078, 0x0038
+        0x800, 0xC00, 0xE00, 0xF00, 0xF80, 0xFC0,
+        0xFE0, 0xFF0, 0xFF8, 0xFFC, 0xFE0, 0xDC0,
+        0x8E0, 0x060, 0x070, 0x030, 0x030, 0x000
     };
     uint32_t white = framebuffer_color(COLOR_WHITE);
     uint32_t black = framebuffer_color(COLOR_BLACK);
@@ -233,22 +232,22 @@ static void draw_pixel_mouse_cursor(void) {
                 row + 1 == MOUSE_CURSOR_HEIGHT ||
                     !(arrow[row + 1] & bit) ||
                 column == 0 || !(arrow[row] & (bit << 1)) ||
-                column + 1 == MOUSE_CURSOR_WIDTH ||
+                column + 1 == MOUSE_CURSOR_ARROW_WIDTH ||
                     !(arrow[row] & (bit >> 1));
             put_pixel_overlay(mouse_pixel_x + column,
                 mouse_pixel_y + row, edge ? black : white);
         }
     }
     if (mouse_pointer_busy) {
-        static const uint8_t hourglass[8] = {
-            0xFE, 0x82, 0x44, 0x28, 0x10, 0x28, 0x44, 0xFE
+        static const uint8_t hourglass[7] = {
+            0x7F, 0x41, 0x22, 0x14, 0x22, 0x41, 0x7F
         };
-        for (uint32_t row = 0; row < 8; row++) {
-            for (uint32_t column = 0; column < 8; column++) {
-                uint32_t color = hourglass[row] & (0x80U >> column)
+        for (uint32_t row = 0; row < 7; row++) {
+            for (uint32_t column = 0; column < 7; column++) {
+                uint32_t color = hourglass[row] & (0x40U >> column)
                     ? framebuffer_color(COLOR_YELLOW)
                     : black;
-                put_pixel_overlay(mouse_pixel_x + 11 + column,
+                put_pixel_overlay(mouse_pixel_x + 9 + column,
                     mouse_pixel_y + row, color);
             }
         }
@@ -260,17 +259,21 @@ static void erase_pixel_mouse_cursor(void) {
     if (!mouse_pixel_visible || !framebuffer_shadow) return;
     for (uint32_t row = 0; row < MOUSE_CURSOR_HEIGHT; row++) {
         uint32_t y = mouse_pixel_y + row;
-        if (y >= framebuffer_height) continue;
-        for (uint32_t column = 0; column < MOUSE_CURSOR_WIDTH; column++) {
-            uint32_t x = mouse_pixel_x + column;
-            if (x >= framebuffer_width) continue;
-            size_t offset = (size_t)y * framebuffer_pitch +
-                (size_t)x * framebuffer_bytes_per_pixel;
-            volatile uint8_t* pixel = framebuffer + offset;
-            const uint8_t* shadow_pixel = framebuffer_shadow + offset;
-            for (uint8_t byte = 0; byte < framebuffer_bytes_per_pixel; byte++) {
-                pixel[byte] = shadow_pixel[byte];
-            }
+        if (y >= framebuffer_height || mouse_pixel_x >= framebuffer_width) {
+            continue;
+        }
+        uint32_t visible_width = framebuffer_width - mouse_pixel_x;
+        if (visible_width > MOUSE_CURSOR_WIDTH) {
+            visible_width = MOUSE_CURSOR_WIDTH;
+        }
+        size_t byte_count =
+            (size_t)visible_width * framebuffer_bytes_per_pixel;
+        size_t offset = (size_t)y * framebuffer_pitch +
+            (size_t)mouse_pixel_x * framebuffer_bytes_per_pixel;
+        volatile uint8_t* pixel = framebuffer + offset;
+        const uint8_t* shadow_pixel = framebuffer_shadow + offset;
+        for (size_t byte = 0; byte < byte_count; byte++) {
+            pixel[byte] = shadow_pixel[byte];
         }
     }
     mouse_pixel_visible = false;

@@ -855,22 +855,34 @@ static void shell_installer_draw_option(uint8_t row, bool active,
 
 static const block_device_t* shell_installer_get_target(void) {
     size_t device_count = storage_get_device_count();
+    const block_device_t* primary_slave = NULL;
+    const block_device_t* primary_master = NULL;
     for (size_t index = 0; index < device_count; index++) {
         const block_device_t* device = storage_get_device_at(index);
         if (device && shell_string_equals(device->name,
                 "ata0-primary-slave")) {
-            return device;
+            primary_slave = device;
+        } else if (device && shell_string_equals(device->name,
+                "ata0-primary-master")) {
+            primary_master = device;
         }
     }
 
-    for (size_t index = 0; index < device_count; index++) {
-        const block_device_t* device = storage_get_device_at(index);
-        if (device && shell_string_equals(device->name,
-                "ata0-primary-master")) {
-            return device;
-        }
+    uint64_t image_sectors = shell_installer_image_size /
+        BLOCK_SECTOR_SIZE;
+    if (primary_slave &&
+        primary_slave->sector_size == BLOCK_SECTOR_SIZE &&
+        image_sectors != 0 &&
+        image_sectors <= primary_slave->sector_count) {
+        return primary_slave;
     }
-    return NULL;
+    if (primary_master &&
+        primary_master->sector_size == BLOCK_SECTOR_SIZE &&
+        image_sectors != 0 &&
+        image_sectors <= primary_master->sector_count) {
+        return primary_master;
+    }
+    return primary_slave ? primary_slave : primary_master;
 }
 
 static bool shell_installer_target_is_primary_master(
@@ -1042,13 +1054,13 @@ static void shell_installer_draw_preflight(void) {
             COLOR_WHITE, COLOR_BLACK);
         shell_ui_text(156, 202,
             target_is_primary_master
-                ? "Only ATA disk detected; installation overwrites it."
+                ? "Selected primary-master target will be erased."
                 : "The primary master (RockFS/data) disk will be preserved.",
             target_is_primary_master ? COLOR_YELLOW : COLOR_LIGHT_GRAY,
             COLOR_BLACK);
         if (install_target) {
             shell_ui_text(156, 270, target_is_primary_master
-                    ? "Target: ATA primary master (only ATA disk detected)"
+                    ? "Target: ATA primary master"
                     : "Target: ATA primary slave",
                 COLOR_WHITE, COLOR_BLACK);
             shell_ui_text(156, 310, "Disk capacity:",
@@ -1109,7 +1121,7 @@ static void shell_installer_draw_preflight(void) {
     display_write_at(2, 2, "Installation disk preflight");
     display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     display_write_at(2, 4, target_is_primary_master
-        ? "Only ATA disk detected; install will overwrite it."
+        ? "Primary-master target selected; install will overwrite it."
         : "A dedicated target disk is required.");
     if (!target_is_primary_master) {
         display_write_at(2, 6, "Primary master (RockFS/data) is preserved.");
@@ -1118,7 +1130,7 @@ static void shell_installer_draw_preflight(void) {
     if (install_target) {
         display_set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
         display_write_at(2, 11, target_is_primary_master
-            ? "Target detected: ata0-primary-master"
+            ? "Target selected: ata0-primary-master"
             : "Target detected: ata0-primary-slave");
         display_set_color(COLOR_WHITE, COLOR_BLACK);
         display_write_at(2, 12, "Capacity:");
@@ -1183,7 +1195,7 @@ static void shell_installer_draw_confirmation(void) {
             "This overwrites the beginning of the selected disk.",
             COLOR_WHITE, COLOR_BLACK);
         shell_ui_text(156, 250, target_is_primary_master
-                ? "Target: ATA primary master (only ATA disk detected)"
+                ? "Target: ATA primary master"
                 : "Target: ATA primary slave",
             COLOR_WHITE, COLOR_BLACK);
         shell_ui_text(156, 294, "Install image:", COLOR_LIGHT_GRAY,
@@ -1230,7 +1242,7 @@ static void shell_installer_draw_confirmation(void) {
         "This overwrites the beginning of the selected target disk.");
     display_set_color(COLOR_WHITE, COLOR_BLACK);
     display_write_at(2, 6, target_is_primary_master
-        ? "Target: ata0-primary-master (only ATA disk detected)"
+        ? "Target: ata0-primary-master"
         : "Target: ata0-primary-slave");
     display_write_at(2, 8, "Image size:");
     display_set_cursor(14, 8);
