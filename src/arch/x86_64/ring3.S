@@ -4,10 +4,10 @@
 .global ring3_enter
 .type ring3_enter, @function
 ring3_enter:
-    pushq $0x1B
+    pushq $0x23
     pushq %rsi
     pushq $0x02
-    pushq $0x23
+    pushq $0x1B
     pushq %rdi
     iretq
 .size ring3_enter, .-ring3_enter

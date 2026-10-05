@@ -12,13 +12,43 @@
 #include "display.h"
 #include "ring3.h"
 
-#define KERNEL_CS     0x08   /* must be the 64-bit code segment of the GDT your boot code loads */
-#define IDT_INT_GATE  0x8E   /* present, DPL0, 64-bit interrupt gate (clears IF on entry) */
+#define KERNEL_CS     0x08   /* must be the code segment of the GDT your boot code loads */
+#define IDT_INT_GATE  0x8E   /* present, DPL0, interrupt gate (clears IF on entry) */
 #define IRQ_BASE      32
 #define IRQ_COUNT     16
 #define VECTOR_COUNT  (IRQ_BASE + IRQ_COUNT)
 #define IDT_USER_INT_GATE 0xEE
 
+#ifdef ROCKOS_ARCH_32
+struct idt_entry {
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t  zero;
+    uint8_t  type_attributes;
+    uint16_t offset_high;
+} __attribute__((packed));
+
+struct idt_ptr {
+    uint16_t limit;
+    uint32_t base;
+} __attribute__((packed));
+
+/* Must match the pusha layout in src/arch/i386/isr32.S:
+ * pusha pushes edi esi ebp esp ebx edx ecx eax (in that memory order),
+ * then the stub pushed vector + error_code, then the CPU frame. */
+typedef struct {
+    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
+    uint32_t vector, error_code;
+    uint32_t eip, cs, eflags, esp, ss;
+} interrupt_frame_t;
+
+static struct idt_entry idt[256];
+static struct idt_ptr idtp;
+
+/* Defined in isr32.S (32-bit addresses). */
+extern const uint32_t isr_stub_table[VECTOR_COUNT];
+extern void ring3_syscall_stub(void);
+#else
 struct idt_entry {
     uint16_t offset_low;
     uint16_t selector;
@@ -48,6 +78,7 @@ static struct idt_ptr idtp;
 /* Defined in isr.S */
 extern const uint64_t isr_stub_table[VECTOR_COUNT];
 extern void ring3_syscall_stub(void);
+#endif
 
 void interrupt_dispatch(interrupt_frame_t* frame);
 
@@ -62,14 +93,20 @@ static const char* const exception_names[] = {
 };
 #define EXCEPTION_NAME_COUNT (sizeof(exception_names) / sizeof(exception_names[0]))
 
-void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags) {
+void idt_set_gate(uint8_t num, uintptr_t base, uint16_t sel, uint8_t flags) {
     idt[num].offset_low = base & 0xFFFF;
     idt[num].selector = sel;
+#ifdef ROCKOS_ARCH_32
+    idt[num].zero = 0;
+    idt[num].type_attributes = flags;
+    idt[num].offset_high = (base >> 16) & 0xFFFF;
+#else
     idt[num].ist = 0;
     idt[num].type_attributes = flags;
     idt[num].offset_mid = (base >> 16) & 0xFFFF;
     idt[num].offset_high = (base >> 32) & 0xFFFFFFFF;
     idt[num].zero = 0;
+#endif
 }
 
 /* ---------- fatal exception screen ---------- */

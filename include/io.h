@@ -39,6 +39,18 @@ static inline void io_wait(void) {
 
 static inline uint64_t save_irq_disable(void) {
     uint64_t flags;
+#ifdef ROCKOS_ARCH_32
+    uint32_t low;
+    asm volatile (
+        "pushfl\n\t"
+        "popl %0\n\t"
+        "cli"
+        : "=r"(low)
+        :
+        : "memory"
+    );
+    flags = low;
+#else
     asm volatile (
         "pushfq\n\t"
         "popq %0\n\t"
@@ -47,10 +59,21 @@ static inline uint64_t save_irq_disable(void) {
         :
         : "memory"
     );
+#endif
     return flags;
 }
 
 static inline void restore_irq(uint64_t flags) {
+#ifdef ROCKOS_ARCH_32
+    uint32_t low = (uint32_t)flags;
+    asm volatile (
+        "pushl %0\n\t"
+        "popfl"
+        :
+        : "r"(low)
+        : "memory"
+    );
+#else
     asm volatile (
         "pushq %0\n\t"
         "popfq"
@@ -58,6 +81,7 @@ static inline void restore_irq(uint64_t flags) {
         : "r"(flags)
         : "memory"
     );
+#endif
 }
 
 #endif // ROCKOS_IO_H
