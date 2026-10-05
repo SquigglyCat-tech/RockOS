@@ -67,7 +67,12 @@ ASM32_SOURCES = src/arch/i386/boot32.S \
 			  src/drivers/error_sound.S
 
 OBJS64 = $(ASM64_SOURCES:.S=.o) $(C_SOURCES:.c=.o)
-OBJS32 = $(ASM32_SOURCES:.S=.o) $(C_SOURCES:.c=.32.o)
+# NOTE: error_sound.S is shared; 32-bit uses error_sound.32.o to avoid
+# clobbering the 64-bit error_sound.o. i386 arch objects live in their
+# own directory so plain .o is safe there.
+OBJS32_ARCH = $(filter src/arch/i386/%.S,$(ASM32_SOURCES))
+OBJS32_ARCH_O = $(OBJS32_ARCH:.S=.o)
+OBJS32 = $(OBJS32_ARCH_O) $(C_SOURCES:.c=.32.o) src/drivers/error_sound.32.o
 
 KERNEL64_BIN = rockos64.bin
 KERNEL32_BIN = rockos32.bin
@@ -115,8 +120,11 @@ $(ISO_BOOT_DIR)/selawik-OFL.txt: $(UI_FONT_LICENSE)
 	mkdir -p $(ISO_BOOT_DIR)
 	cp $< $@
 
-$(KERNEL_BIN): $(OBJS) linker.ld
-	$(LD) $(LDFLAGS) $(OBJS) -o $(KERNEL_BIN)
+$(KERNEL64_BIN): $(OBJS64) linker.ld
+	$(LD64) $(LDFLAGS64) $(OBJS64) -o $(KERNEL64_BIN)
+
+$(KERNEL_BIN): $(KERNEL64_BIN)
+	cp $< $@
 
 $(ISO_BOOT_DIR)/limine-bios.sys: $(LIMINE_DATA_DIR)/limine-bios.sys
 	cp $< $@
@@ -182,6 +190,6 @@ run-installed: $(INSTALL_DISK) $(DATA_DISK)
 		-drive file=$(DATA_DISK),format=raw,if=ide,index=1
 
 clean:
-	rm -f $(OBJS) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS)
+	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS)
 
 .PHONY: all run run-installed clean
