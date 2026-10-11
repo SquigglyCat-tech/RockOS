@@ -591,28 +591,52 @@ static uint8_t cmos_read(uint8_t reg)
     return inb(0x71);
 }
 
-/* Reads the RTC. Returns true when the displayed time changed. */
+/* Read a stable CMOS RTC snapshot before converting its format.
+ * Reading twice avoids displaying a mixed minute/hour during a clock tick. */
 static bool clock_poll(void)
 {
-    uint8_t status_a = cmos_read(0x0A);
-    uint8_t mn, hr, b, h;
+    uint8_t sec1 = 0, sec2 = 0;
+    uint8_t mn1 = 0, mn2 = 0;
+    uint8_t hr1 = 0, hr2 = 0;
+    uint8_t b1 = 0, b2 = 0;
+    uint8_t h, mn, b;
     bool pm_flag;
-    int h24, old_h = clock_h12, old_m = clock_min;
+    int h24, attempt;
+    int old_h = clock_h12, old_m = clock_min;
     bool old_pm = clock_pm, old_valid = clock_valid;
 
-    if (status_a & 0x80) return false;   /* update in progress */
-    mn = cmos_read(0x02);
-    hr = cmos_read(0x04);
-    b = cmos_read(0x0B);
+    for (attempt = 0; attempt < 4; attempt++) {
+        if (cmos_read(0x0A) & 0x80) continue;
+        sec1 = cmos_read(0x00);
+        mn1 = cmos_read(0x02);
+        hr1 = cmos_read(0x04);
+        b1 = cmos_read(0x0B);
+        if (cmos_read(0x0A) & 0x80) continue;
 
-    pm_flag = (hr & 0x80) != 0;
-    h = (uint8_t)(hr & 0x7F);
-    if (!(b & 0x04)) {
-        h = (uint8_t)((h & 0x0F) + (h >> 4) * 10);
-        mn = (uint8_t)((mn & 0x0F) + (mn >> 4) * 10);
+        sec2 = cmos_read(0x00);
+        mn2 = cmos_read(0x02);
+        hr2 = cmos_read(0x04);
+        b2 = cmos_read(0x0B);
+        if (sec1 == sec2 && mn1 == mn2 && hr1 == hr2 && b1 == b2)
+            break;
     }
+    if (attempt == 4) return false;
+
+    b = b2;
+    mn = mn2;
+    pm_flag = (hr2 & 0x80) != 0;
+    h = (uint8_t)(hr2 & 0x7F);
+
+    /* CMOS can store values as packed BCD or binary. */
+    if (!(b & 0x04)) {
+        h = (uint8_t)((h & 0x0F) + ((h >> 4) * 10));
+        mn = (uint8_t)((mn & 0x0F) + ((mn >> 4) * 10));
+    }
+
     h24 = h;
     if (!(b & 0x02)) {
+        /* In 12-hour mode, 12 AM is 00:00 and 12 PM is 12:00. */
+        if (h < 1 || h > 12) return false;
         h24 = (h % 12) + (pm_flag ? 12 : 0);
     }
     if (h24 > 23 || mn > 59) return false;
@@ -913,12 +937,13 @@ static bool logo_visible(void)
 
 static int32_t logo_x(void)
 {
-    return (sw - (int32_t)DISPLAY_ROCKOS_LOGO_WIDTH) / 2 + 60;
+    /* Centre the logo in the usable desktop, without a decorative offset. */
+    return (sw - (int32_t)DISPLAY_ROCKOS_LOGO_WIDTH) / 2;
 }
 
 static int32_t logo_y(void)
 {
-    return (tb_y * 66) / 100 - (int32_t)DISPLAY_ROCKOS_LOGO_HEIGHT / 2;
+    return (tb_y - (int32_t)DISPLAY_ROCKOS_LOGO_HEIGHT) / 2;
 }
 
 static int widget_boxes(box_t* out)
@@ -1931,6 +1956,81 @@ static void draw_icon_dim(int type, int32_t x, int32_t y, int32_t size,
     g_dim = false;
 }
 
+/* Desktop-only 16x16 pixel-art icons. Each shape is built from hard-edged
+ * colour blocks; window/tool icons keep their classic detailed artwork. */
+static void pixel_block(int32_t x, int32_t y, int cell,
+    int px, int py, int pw, int ph, uint32_t colour)
+{
+    if (pw > 0 && ph > 0)
+        rect(x + px * cell, y + py * cell, pw * cell, ph * cell, colour);
+}
+
+static void draw_pixel_desktop_icon(int type, int32_t x, int32_t y,
+    int32_t size)
+{
+    int cell = size / 16;
+    if (cell < 1) cell = 1;
+
+    switch (type) {
+    case IC_COMPUTER:
+        pixel_block(x,y,cell,1,1,14,9,0x15191F);
+        pixel_block(x,y,cell,2,2,12,7,0x69B9E8);
+        pixel_block(x,y,cell,2,2,12,1,0xD8F2FF);
+        pixel_block(x,y,cell,3,4,4,1,0xFFFFFF);
+        pixel_block(x,y,cell,7,10,2,2,0xB8C0C8);
+        pixel_block(x,y,cell,4,12,8,1,0xD9E0E7);
+        pixel_block(x,y,cell,3,13,10,2,0x626D78);
+        pixel_block(x,y,cell,4,13,8,1,0xE8EDF2);
+        break;
+    case IC_DOCS:
+        pixel_block(x,y,cell,2,1,10,13,0x4D86B8);
+        pixel_block(x,y,cell,3,2,8,11,0xF2F5F8);
+        pixel_block(x,y,cell,4,4,6,1,0x6AB5E5);
+        pixel_block(x,y,cell,4,6,5,1,0x9AA8B5);
+        pixel_block(x,y,cell,4,8,6,1,0x9AA8B5);
+        pixel_block(x,y,cell,4,10,4,1,0x9AA8B5);
+        pixel_block(x,y,cell,2,12,10,2,0x3B6792);
+        break;
+    case IC_NETWORK:
+        pixel_block(x,y,cell,6,2,4,4,0x62C6F0);
+        pixel_block(x,y,cell,2,10,4,4,0x62C6F0);
+        pixel_block(x,y,cell,10,10,4,4,0x62C6F0);
+        pixel_block(x,y,cell,7,6,2,4,0xE4EDF5);
+        pixel_block(x,y,cell,4,8,8,2,0xE4EDF5);
+        pixel_block(x,y,cell,7,3,2,2,0xFFFFFF);
+        pixel_block(x,y,cell,3,11,2,2,0xFFFFFF);
+        pixel_block(x,y,cell,11,11,2,2,0xFFFFFF);
+        break;
+    case IC_RECYCLE:
+        pixel_block(x,y,cell,3,4,10,2,0xDDE4E9);
+        pixel_block(x,y,cell,4,6,8,8,0xDDE4E9);
+        pixel_block(x,y,cell,5,7,1,6,0x59636D);
+        pixel_block(x,y,cell,8,7,1,6,0x59636D);
+        pixel_block(x,y,cell,10,7,1,6,0x59636D);
+        pixel_block(x,y,cell,6,2,4,2,0xDDE4E9);
+        pixel_block(x,y,cell,2,3,12,1,0x9EAAB4);
+        pixel_block(x,y,cell,5,8,1,3,0xFFFFFF);
+        break;
+    case IC_CMD:
+        pixel_block(x,y,cell,1,2,14,11,0xAEB7C1);
+        pixel_block(x,y,cell,2,3,12,9,0x10151B);
+        pixel_block(x,y,cell,2,3,12,2,0x3A5369);
+        pixel_block(x,y,cell,4,6,1,1,0x7BE0A0);
+        pixel_block(x,y,cell,5,7,1,1,0x7BE0A0);
+        pixel_block(x,y,cell,4,8,1,1,0x7BE0A0);
+        pixel_block(x,y,cell,7,9,4,1,0xF1F5F8);
+        pixel_block(x,y,cell,3,12,10,1,0x707B86);
+        break;
+    default:
+        /* Small pixel monitor as a safe fallback for any future shortcut. */
+        pixel_block(x,y,cell,2,2,12,8,0xDDE4E9);
+        pixel_block(x,y,cell,3,3,10,6,0x2476A8);
+        pixel_block(x,y,cell,6,10,4,2,0xAEB7C1);
+        pixel_block(x,y,cell,4,12,8,2,0xDDE4E9);
+        break;
+    }
+}
+
 /* ====================================================================== */
 /* ============================== Wallpaper ============================= */
 /* ====================================================================== */
@@ -1943,10 +2043,13 @@ static void draw_wallpaper(void)
             int32_t bh = (y + 4 <= tb_y) ? 4 : tb_y - y;
             if (y + bh <= clip.y0 || y >= clip.y1) continue;
             rect(0, y, sw, bh,
-                mix_rgb(TH.desk_hi, TH.desktop, (y * 100) / tb_y));
+                mix_rgb(0x101216, 0x030405, (y * 100) / tb_y));
         }
+    } else if (wall_style == 0) {
+        /* The default logo wallpaper is nearly black, not mid-grey. */
+        rect(0, 0, sw, tb_y, 0x050608);
     } else {
-        rect(0, 0, sw, tb_y, TH.desktop);
+        rect(0, 0, sw, tb_y, 0x030405);
     }
 }
 
@@ -1964,12 +2067,12 @@ static void draw_icons(void)
         int32_t l1w, l2w, l1x, l2x;
         if (!box_touch(&clip, x, y, ICON_TILE_W, ICON_TILE_H)) continue;
 
-        draw_icon(desk_icon_ic[i], ix, y + 6, 32);
         if (sel) {
             display_blend_rect_rgb((uint32_t)(ix - 2), (uint32_t)(y + 4), 36, 36,
                 (uint8_t)(TH.select_bg >> 16), (uint8_t)(TH.select_bg >> 8),
                 (uint8_t)TH.select_bg, 110);
         }
+        draw_pixel_desktop_icon(desk_icon_ic[i], ix, y + 6, 32);
 
         l1w = tw(desk_label1[i]);
         l1x = x + (ICON_TILE_W - l1w) / 2;
