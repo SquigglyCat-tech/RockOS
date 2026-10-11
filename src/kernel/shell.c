@@ -115,6 +115,7 @@ static uint8_t shell_installer_arch;
 static bool shell_installer_arch_locked;
 static shell_installer_button_t shell_installer_pressed_button;
 static uint8_t shell_installer_pressed_page;
+static bool shell_installer_mouse_down_latched;
 static const char* shell_installer_result_message;
 static bool shell_profile_enabled;
 static bool shell_profile_active;
@@ -1769,6 +1770,18 @@ static void shell_installer_handle_key(const input_key_event_t* event) {
 }
 
 void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_button_down) {
+    /*
+     * PS/2 mouse input may deliver many packets during one physical click.
+     * Treat the press edge as one event, including clicks on preference rows.
+     */
+    if (!left_button_down) {
+        shell_installer_mouse_down_latched = false;
+    } else if (shell_installer_mouse_down_latched) {
+        return;
+    } else {
+        shell_installer_mouse_down_latched = true;
+    }
+
     if (!shell_installer_active) return;
 
     uint32_t width;
@@ -1787,17 +1800,8 @@ void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_button_down) {
                     &rect) &&
                 shell_ui_rect_contains(&rect, x, y)) {
                 shell_installer_activate_button(button);
-            } else {
-                shell_installer_redraw_current_page();
             }
         }
-        return;
-    }
-
-    /* Mouse packets arrive continuously while a button is held. Only the
-       initial press should redraw the page; repainting the full framebuffer
-       for every packet makes the installer appear to freeze in emulators. */
-    if (shell_installer_pressed_button != SHELL_INSTALLER_BUTTON_NONE) {
         return;
     }
 
@@ -1807,7 +1811,8 @@ void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_button_down) {
     if (button != SHELL_INSTALLER_BUTTON_NONE) {
         shell_installer_pressed_button = button;
         shell_installer_pressed_page = shell_installer_page;
-        shell_installer_redraw_current_page();
+        /* Defer painting until activation; a click must not redraw the whole
+           installer once on press and again on release. */
         return;
     }
 
