@@ -98,7 +98,7 @@ static void task_b_entry(void) {
 static void task_a_entry(void) {
     volatile uint64_t work = 0;
     for (;;) {
-        for (uint32_t spin = 0; spin < 0x10000U; spin++) work++;
+        for (uint32_t spin = 0; spin < 0x1000U; spin++) work++;
         task_a_progress++;
         task_sleep_ticks(2);
     }
@@ -107,7 +107,7 @@ static void task_a_entry(void) {
 static void task_b_entry(void) {
     volatile uint64_t work = 0;
     for (;;) {
-        for (uint32_t spin = 0; spin < 0x10000U; spin++) work++;
+        for (uint32_t spin = 0; spin < 0x1000U; spin++) work++;
         task_b_progress++;
         task_sleep_ticks(2);
     }
