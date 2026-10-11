@@ -2429,7 +2429,6 @@ void shell_handle_key_event(const input_key_event_t* event) {
         return;
     }
     if (shell_installer_active) {
-        shell_profile_enabled = true;
         shell_installer_handle_key(event);
         return;
     }
