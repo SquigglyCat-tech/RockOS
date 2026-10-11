@@ -423,7 +423,7 @@ static void shell_ui_draw_backdrop(const char* title, const char* subtitle) {
     uint32_t width;
     uint32_t height;
     if (!shell_get_graphics_size(&width, &height)) return;
-    display_clear();
+    /* The bands cover every framebuffer row, so a full-screen clear is redundant. */
     for (uint32_t y = 0; y < height; y += 32) {
         uint8_t shade = (uint8_t)(34 - (y * 15 / height));
         uint32_t band_height = height - y < 32 ? height - y : 32;
@@ -452,8 +452,10 @@ static void shell_ui_draw_glass_panel(uint32_t x, uint32_t y,
     display_fill_rect_rgb(x, y, width, height, 108, 111, 116);
     display_fill_rect_rgb(x + 1, y + 1, width - 2, height - 2,
         18, 20, 23);
-    display_blend_rect_rgb(x + 2, y + 2, width - 4, height - 4,
-        130, 134, 140, 15);
+    /* Match the old subtle overlay with a solid fill instead of blending
+       every pixel across the entire panel. */
+    display_fill_rect_rgb(x + 2, y + 2, width - 4, height - 4,
+        25, 27, 29);
     display_blend_rect_rgb(x + 2, y + 2, width - 4, 2,
         255, 255, 255, 105);
     display_blend_rect_rgb(x + 2, y + 4, 2, height - 6,
@@ -1003,7 +1005,7 @@ static void shell_installer_draw_setup(void) {
     if (shell_get_graphics_size(&width, &height)) {
         uint64_t background_start = shell_profile_active
             ? shell_profile_read_timestamp_counter() : 0;
-        display_clear();
+        /* These bands cover the entire framebuffer; avoid clearing it first. */
         for (uint32_t y = 0; y < height; y += 32) {
             uint8_t shade = (uint8_t)(34 - (y * 15 / height));
             uint32_t band_height = height - y < 32 ? height - y : 32;
