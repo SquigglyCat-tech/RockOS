@@ -427,8 +427,10 @@ static void shell_ui_draw_glass_panel(uint32_t x, uint32_t y,
     display_fill_rect_rgb(x, y, width, height, 108, 111, 116);
     display_fill_rect_rgb(x + 1, y + 1, width - 2, height - 2,
         18, 20, 23);
-    display_blend_rect_rgb(x + 2, y + 2, width - 4, height - 4,
-        130, 134, 140, 15);
+    /* The panel already has a solid dark fill. Blending a translucent tint
+       over every interior pixel adds hundreds of thousands of per-pixel
+       read/modify/writes on each page redraw for almost no visible benefit.
+       Keep the narrow edge highlights below, but skip this full-panel pass. */
     display_blend_rect_rgb(x + 2, y + 2, width - 4, 2,
         255, 255, 255, 105);
     display_blend_rect_rgb(x + 2, y + 4, 2, height - 6,
