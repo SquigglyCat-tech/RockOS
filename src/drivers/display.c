@@ -759,9 +759,15 @@ bool display_init_framebuffer(uintptr_t boot_info_address) {
 
     framebuffer = (volatile uint8_t*)mapped_address;
     framebuffer_shadow = shadow;
+    uint64_t shadow_zero_start = display_read_timestamp_counter();
     for (size_t index = 0; index < (size_t)framebuffer_bytes; index++) {
         framebuffer_shadow[index] = 0;
     }
+    uint64_t shadow_zero_cycles =
+        display_read_timestamp_counter() - shadow_zero_start;
+    serial_write_string("[diag] framebuffer_shadow_zero_cycles=");
+    serial_write_dec(shadow_zero_cycles);
+    serial_write_string("\n");
     framebuffer_width = info->framebuffer_width;
     framebuffer_height = info->framebuffer_height;
     framebuffer_pitch = info->framebuffer_pitch;
@@ -782,8 +788,17 @@ bool display_init_framebuffer(uintptr_t boot_info_address) {
     mouse_pixel_y = 0;
     mouse_pixel_visible = false;
     serial_write_string("[fb] mapping succeeded; clearing framebuffer\n");
+    uint64_t clear_start = display_read_timestamp_counter();
     display_clear();
+    uint64_t clear_cycles = display_read_timestamp_counter() - clear_start;
+    uint64_t present_start = display_read_timestamp_counter();
     display_present();
+    uint64_t present_cycles = display_read_timestamp_counter() - present_start;
+    serial_write_string("[diag] framebuffer_clear_cycles=");
+    serial_write_dec(clear_cycles);
+    serial_write_string(" present_cycles=");
+    serial_write_dec(present_cycles);
+    serial_write_string("\n");
     serial_write_string("[fb] framebuffer clear completed\n");
     framebuffer_status = "enabled";
     return true;
