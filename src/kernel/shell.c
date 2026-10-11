@@ -992,6 +992,20 @@ static void shell_installer_draw_setup(void) {
             "Choose language, region, keyboard, and CPU mode.",
             COLOR_LIGHT_GRAY, COLOR_BLACK);
 
+        /* A restrained setup wizard header: blue status rail, segmented
+           progress indicator, and clear step label, without crowding fields. */
+        display_fill_rect_rgb(72, 258, 64, 4, 83, 177, 225);
+        display_fill_rect_rgb(140, 258, 64, 4, 74, 78, 84);
+        display_fill_rect_rgb(208, 258, 64, 4, 74, 78, 84);
+        display_fill_rect_rgb(72, 269, width - 144, 1, 65, 72, 82);
+        shell_ui_text(72, 278, "01  /  SYSTEM PREFERENCES",
+            COLOR_LIGHT_CYAN, COLOR_BLACK);
+        shell_ui_text(width - 230, 278, "ROCKOS SETUP",
+            COLOR_LIGHT_GRAY, COLOR_BLACK);
+        display_fill_rect_rgb(72, 304, 3, 20, 67, 166, 218);
+        shell_ui_text(86, 306, "REGIONAL AND PLATFORM OPTIONS",
+            COLOR_WHITE, COLOR_BLACK);
+
         for (uint8_t index = 0; index < SHELL_INSTALLER_FIELD_COUNT; index++) {
             shell_installer_draw_preference_row(width, height, index, true);
         }
