@@ -1,0 +1,482 @@
+TARGET64 = x86_64-elf
+TARGET32 = i686-elf
+AUDIO_BOOT_TEST_TONE ?= 1
+PYTHON ?= $(if $(wildcard /c/Python314/python.exe),/c/Python314/python.exe,python)
+LIMINE_TOOL ?= $(if $(wildcard /c/opt/limine/limine-binary/limine-tool-windows-x86/limine.exe),/c/opt/limine/limine-binary/limine-tool-windows-x86/limine.exe,limine)
+LIMINE_DATA_DIR ?= $(if $(wildcard /c/opt/limine/limine-binary),/c/opt/limine/limine-binary,$(shell "$(LIMINE_TOOL)" --print-datadir))
+
+CC64  = $(TARGET64)-gcc
+LD64  = $(TARGET64)-ld
+ASM64 = $(TARGET64)-gcc
+
+CC32  = $(TARGET32)-gcc
+LD32  = $(TARGET32)-ld
+ASM32 = $(TARGET32)-gcc
+
+CFLAGS64 = -O2 -ffreestanding -mcmodel=large -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_64=1 -c
+CFLAGS32 = -O2 -ffreestanding -march=i686 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_32=1 -c
+ASMFLAGS = -Iinclude -c
+LDFLAGS64 = -m elf_x86_64 -T linker.ld
+LDFLAGS32 = -m elf_i386 -T linker32.ld
+POWERSHELL ?= powershell.exe
+UI_ASSETS = src/drivers/ui_assets.h
+UI_FONT = assets/selawik/selawk.ttf
+UI_FONT_LICENSE = assets/selawik/OFL.txt
+
+C_SOURCES = src/kernel/kernel.c \
+            src/kernel/desktop.c \
+            src/kernel/acpi.c \
+            src/kernel/pic.c \
+            src/kernel/idt.c \
+			src/kernel/gdt.c \
+            src/drivers/display.c \
+            src/drivers/ps2.c \
+            src/drivers/keyboard.c \
+			src/drivers/mouse.c \
+			src/drivers/serial.c \
+			src/drivers/timer.c \
+			src/kernel/task.c \
+			src/kernel/process.c \
+			src/kernel/ring3.c \
+			src/kernel/paging.c \
+			src/kernel/pmm.c \
+			src/kernel/pci.c \
+			src/kernel/block.c \
+			src/kernel/filesystem.c \
+			src/drivers/ata_pio.c \
+			src/kernel/shell.c \
+			src/kernel/tour.c \
+			src/drivers/audio.c
+
+ASM64_SOURCES = src/arch/x86_64/boot.S \
+			  src/arch/x86_64/gdt_load.S \
+			  src/arch/x86_64/isr.S \
+			  src/arch/x86_64/ring3.S \
+			  src/arch/x86_64/context_switch.S \
+			  src/drivers/error_sound.S
+
+# 32-bit arch sources land in src/arch/i386/ as the port progresses
+# (boot32.S, gdt32_load.S, isr32.S, ring3_32.S, context32_switch.S).
+# They are listed here so `make ARCH=32` starts compiling them; add the
+# files incrementally. error_sound.S is shared (raw PCM + size symbols).
+ASM32_SOURCES = src/arch/i386/boot32.S \
+			  src/arch/i386/gdt32_load.S \
+			  src/arch/i386/isr32.S \
+			  src/arch/i386/ring3_32.S \
+			  src/arch/i386/context32_switch.S \
+			  src/drivers/error_sound.S
+
+OBJS64 = $(ASM64_SOURCES:.S=.o) $(C_SOURCES:.c=.o)
+# NOTE: error_sound.S is shared; 32-bit uses error_sound.32.o to avoid
+# clobbering the 64-bit error_sound.o. i386 arch objects live in their
+# own directory so plain .o is safe there.
+OBJS32_ARCH = $(filter src/arch/i386/%.S,$(ASM32_SOURCES))
+OBJS32_ARCH_O = $(OBJS32_ARCH:.S=.o)
+OBJS32 = $(OBJS32_ARCH_O) $(C_SOURCES:.c=.32.o) src/drivers/error_sound.32.o
+
+KERNEL64_BIN = rockos64.bin
+KERNEL32_BIN = rockos32.bin
+KERNEL_BIN = rockos.bin
+ISO_IMAGE = rockos.iso
+DATA_DISK = rockos-data.img
+INSTALL_DISK ?= rockos-install-target.img
+INSTALL_IMAGE = build/rockos-install.img
+INSTALL_MODULE = $(ISO_BOOT_DIR)/rockos-install.img
+ISO_DIR = iso
+ISO_BOOT_DIR = $(ISO_DIR)/boot
+
+all: $(ISO_IMAGE)
+
+# Default 64-bit objects.
+%.o: %.c
+	$(CC64) $(CFLAGS64) $< -o $@
+
+%.o: %.S
+	$(ASM64) $(ASMFLAGS) $< -o $@
+
+# Parallel 32-bit objects (foo.c -> foo.32.o) so both kernels can build
+# from the same tree without clobbering each other.
+%.32.o: %.c
+	$(CC32) $(CFLAGS32) $< -o $@
+
+src/arch/i386/%.o: src/arch/i386/%.S
+	$(ASM32) $(ASMFLAGS) $< -o $@
+
+src/drivers/error_sound.o: assets/error_48000_stereo_s16le.pcm
+
+src/drivers/error_sound.32.o: assets/error_48000_stereo_s16le.pcm
+	$(ASM32) $(ASMFLAGS) src/drivers/error_sound.S -o $@
+
+$(UI_ASSETS): $(UI_FONT) $(UI_FONT_LICENSE) assets/rockos-logo-outlined.png scripts/generate_ui_assets.ps1
+	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/generate_ui_assets.ps1 \
+		-FontPath $(UI_FONT) \
+		-LogoPath assets/rockos-logo-outlined.png \
+		-OutputPath $(UI_ASSETS)
+
+src/drivers/display.o: $(UI_ASSETS)
+
+$(ISO_BOOT_DIR)/selawik-OFL.txt: $(UI_FONT_LICENSE)
+	mkdir -p $(ISO_BOOT_DIR)
+	cp $< $@
+
+$(KERNEL64_BIN): $(OBJS64) linker.ld
+	$(LD64) $(LDFLAGS64) $(OBJS64) -o $(KERNEL64_BIN)
+
+$(KERNEL_BIN): $(KERNEL64_BIN)
+	cp $< $@
+
+$(ISO_BOOT_DIR)/limine-bios.sys: $(LIMINE_DATA_DIR)/limine-bios.sys
+	cp $< $@
+
+$(ISO_BOOT_DIR)/limine-bios-cd.bin: $(LIMINE_DATA_DIR)/limine-bios-cd.bin
+	cp $< $@
+
+$(ISO_BOOT_DIR)/limine-uefi-cd.bin: $(LIMINE_DATA_DIR)/limine-uefi-cd.bin
+	cp $< $@
+
+$(ISO_DIR)/EFI/BOOT/BOOTX64.EFI: $(LIMINE_DATA_DIR)/BOOTX64.EFI
+	mkdir -p $(ISO_DIR)/EFI/BOOT
+	cp $< $@
+
+$(INSTALL_IMAGE): $(KERNEL_BIN) $(ISO_BOOT_DIR)/limine-bios.sys $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(ISO_BOOT_DIR)/limine-disk.conf scripts/make_install_image.py
+	$(PYTHON) scripts/make_install_image.py \
+		--kernel $(KERNEL_BIN) \
+		--bios $(ISO_BOOT_DIR)/limine-bios.sys \
+		--efi $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI \
+		--config $(ISO_BOOT_DIR)/limine-disk.conf \
+		--output $@
+	"$(LIMINE_TOOL)" bios-install $@
+
+$(INSTALL_MODULE): $(INSTALL_IMAGE)
+	cp $< $@
+
+$(ISO_IMAGE): $(KERNEL_BIN) $(ISO_BOOT_DIR)/limine-bios.sys $(ISO_BOOT_DIR)/limine-bios-cd.bin $(ISO_BOOT_DIR)/limine-uefi-cd.bin $(ISO_BOOT_DIR)/limine.conf $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_MODULE) $(ISO_BOOT_DIR)/selawik-OFL.txt
+	mkdir -p $(ISO_BOOT_DIR)
+	cp $(KERNEL_BIN) $(ISO_BOOT_DIR)/rockos.bin
+	xorriso -as mkisofs -R -r -J \
+		-b boot/limine-bios-cd.bin \
+		-no-emul-boot \
+		-boot-load-size 4 \
+		-boot-info-table \
+		--efi-boot boot/limine-uefi-cd.bin \
+		-efi-boot-part \
+		--efi-boot-image \
+		-o $(ISO_IMAGE) $(ISO_DIR)
+
+$(DATA_DISK):
+	qemu-img create -f raw $@ 16M
+
+$(INSTALL_DISK):
+	qemu-img create -f raw $@ 64M
+
+# Keep the install target first so reboot boots it; leave the CD as fallback.
+run: $(ISO_IMAGE) $(DATA_DISK) $(INSTALL_DISK)
+	qemu-system-x86_64 -machine pc -serial stdio \
+		-audiodev driver=dsound,id=audio0 \
+		-device AC97,audiodev=audio0 \
+		-drive file=$(INSTALL_DISK),format=raw,if=none,id=target \
+		-device ide-hd,drive=target,bus=ide.0,unit=1,bootindex=1 \
+		-drive file=$(DATA_DISK),format=raw,if=none,id=data \
+		-device ide-hd,drive=data,bus=ide.0,unit=0,bootindex=2 \
+		-drive file=$(ISO_IMAGE),format=raw,media=cdrom,if=none,id=installcd,readonly=on \
+		-device ide-cd,drive=installcd,bus=ide.1,unit=0,bootindex=3
+
+run-installed: $(INSTALL_DISK) $(DATA_DISK)
+	qemu-system-x86_64 -machine pc -boot order=c \
+		-audiodev driver=dsound,id=audio0 \
+		-device AC97,audiodev=audio0 \
+		-drive file=$(INSTALL_DISK),format=raw,if=ide,index=0 \
+		-drive file=$(DATA_DISK),format=raw,if=ide,index=1
+
+clean:
+	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS)
+
+.PHONY: all run run-installed clean
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 1M;
+    __kernel_start = .;
+
+    .text ALIGN(4K) :
+    {
+        *(.multiboot)
+        *(.text*)
+    }
+
+    .rodata ALIGN(4K) :
+    {
+        *(.rodata*)
+    }
+
+    .data ALIGN(4K) :
+    {
+        *(.data*)
+    }
+
+    .bss ALIGN(4K) :
+    {
+        *(COMMON)
+        *(.bss*)
+        *(.lbss*)
+    }
+
+    __kernel_end = .;
+}
+/* linker32.ld - 32-bit RockOS link (V86 / older PCs).
+ * Mirrors linker.ld; only the output format differs. The 64-bit
+ * linker.ld path is untouched. OUTPUT_FORMAT keeps i686-elf-ld
+ * from emitting a 64-bit ELF.
+ */
+OUTPUT_FORMAT("elf32-i386")
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 1M;
+    __kernel_start = .;
+
+    .text ALIGN(4K) :
+    {
+        *(.multiboot)
+        *(.text*)
+    }
+
+    .rodata ALIGN(4K) :
+    {
+        *(.rodata*)
+    }
+
+    .data ALIGN(4K) :
+    {
+        *(.data*)
+    }
+
+    .bss ALIGN(4K) :
+    {
+        *(COMMON)
+        *(.bss*)
+        *(.lbss*)
+    }
+
+    __kernel_end = .;
+}
+.code32
+.global _start
+.extern kernel_main
+
+.set ALIGN,    1<<0
+.set MEMINFO,  1<<1
+.set VIDEO,    1<<2
+.set FLAGS,    ALIGN | MEMINFO | VIDEO
+.set MAGIC,    0x1BADB002
+.set CHECKSUM, -(MAGIC + FLAGS)
+
+.section .multiboot, "a"
+.align 4
+.long MAGIC
+.long FLAGS
+.long CHECKSUM
+/* Keep the optional address-field slots so Multiboot graphics fields land at
+ * their specified fixed offsets even when flag 16 is clear. */
+.long 0
+.long 0
+.long 0
+.long 0
+.long 0
+/* Linear framebuffer mode, 1024x768x32. */
+.long 0
+.long 1024
+.long 768
+.long 32
+
+.section .bss
+.align 4096
+p4_table:
+    .skip 4096
+p3_table:
+    .skip 4096
+p2_table:
+    .skip 4096
+.global boot_stack_bottom
+boot_stack_bottom:
+    .skip 16384
+.global boot_stack_top
+boot_stack_top:
+
+.section .rodata
+gdt64:
+    .quad 0
+gdt64_code:
+    .quad (1<<43) | (1<<44) | (1<<47) | (1<<53)
+gdt64_data:
+    .quad (1<<41) | (1<<44) | (1<<47)
+gdt64_pointer:
+    .word . - gdt64 - 1
+    .quad gdt64
+
+.section .text
+_start:
+    movl %eax, %esi
+    mov $boot_stack_top, %esp
+
+    mov $p3_table, %eax
+    or $0x3, %eax
+    mov %eax, p4_table
+
+    mov $p2_table, %eax
+    or $0x3, %eax
+    mov %eax, p3_table
+
+    mov $0, %ecx
+.map_p2_table:
+    mov $0x200000, %eax
+    mul %ecx
+    or $0x83, %eax
+    mov %eax, p2_table(,%ecx,8)
+    inc %ecx
+    cmp $512, %ecx
+    jne .map_p2_table
+
+    mov $p4_table, %eax
+    mov %eax, %cr3
+
+    mov %cr4, %eax
+    or $(1 << 5), %eax
+    mov %eax, %cr4
+
+    mov $0xC0000080, %ecx
+    rdmsr
+    or $(1 << 8), %eax
+    wrmsr
+
+    mov %cr0, %eax
+    or $(1 << 31), %eax
+    mov %eax, %cr0
+
+    lgdt (gdt64_pointer)
+    ljmp $0x08, $long_mode_start
+
+.code64
+long_mode_start:
+    mov $0x10, %ax
+    mov %ax, %ds
+    mov %ax, %es
+    mov %ax, %fs
+    mov %ax, %gs
+    mov %ax, %ss
+
+    movl %esi, %edi
+    movl %ebx, %esi
+    call kernel_main
+
+.hang:
+    cli
+    hlt
+    jmp .hang
+/* src/arch/i386/boot32.S
+ *
+ * 32-bit protected-mode entry for RockOS (V86 / older PCs).
+ * 64-bit path in src/arch/x86_64/boot.S is untouched.
+ *
+ * Contract with Limine/Multiboot1 (same as 64-bit):
+ *   EAX = magic, EBX = info pointer on entry.
+ *   kernel_main(magic, info) with both zero-extended to 32-bit.
+ *
+ * Paging: identity-map the first 1 GiB with 4 MiB large pages in a
+ * single page directory (256 entries), then enable PG+PE. This matches
+ * PMM_IDENTITY_MAP_LIMIT and needs no 64-bit tables.
+ */
+.code32
+
+.global _start
+.extern kernel_main
+
+.set ALIGN,    1<<0
+.set MEMINFO,  1<<1
+.set VIDEO,    1<<2
+.set FLAGS,    ALIGN | MEMINFO | VIDEO
+.set MAGIC,    0x1BADB002
+.set CHECKSUM, -(MAGIC + FLAGS)
+
+.section .multiboot, "a"
+.align 4
+.long MAGIC
+.long FLAGS
+.long CHECKSUM
+/* Keep the optional address-field slots so Multiboot graphics fields land at
+ * their specified fixed offsets even when flag 16 is clear. */
+.long 0
+.long 0
+.long 0
+.long 0
+.long 0
+/* Linear framebuffer mode, 1024x768x32. */
+.long 0
+.long 1024
+.long 768
+.long 32
+
+.section .bss
+.align 4096
+pd_table:
+    .skip 4096
+.global boot_stack_bottom
+boot_stack_bottom:
+    .skip 16384
+.global boot_stack_top
+boot_stack_top:
+
+.section .text
+_start:
+    movl %eax, %esi        /* magic -> ESI (callee-saved across setup) */
+    movl %ebx, %edi        /* info  -> EDI */
+    mov $boot_stack_top, %esp
+
+    /* Build PD: 256 x 4MiB large pages covering 0..1GiB, P+RW. */
+    mov $pd_table, %eax
+    mov $0, %ecx
+.map_pd:
+    mov %ecx, %edx
+    shl $22, %edx          /* phys base = ecx * 4MiB */
+    or $0x83, %edx         /* P | RW | PS(4MiB) */
+    mov %edx, (%eax,%ecx,4)
+    inc %ecx
+    cmp $256, %ecx
+    jne .map_pd
+
+    /* Zero the remaining 768 entries (3..4GiB unmapped for now). */
+    mov $256, %ecx
+.clear_pd:
+    movl $0, (%eax,%ecx,4)
+    inc %ecx
+    cmp $1024, %ecx
+    jne .clear_pd
+
+    mov $pd_table, %eax
+    mov %eax, %cr3
+
+    mov %cr4, %eax
+    or $(1 << 4), %eax    /* PSE: allow 4MiB pages */
+    mov %eax, %cr4
+
+    mov %cr0, %eax
+    or $0x80000001, %eax  /* PG + PE */
+    mov %eax, %cr0
+
+    /* Stack is identity-mapped, flat segments from BIOS are fine.
+     * GDT/IDT are installed later by kernel_main via gdt32/idt32. */
+    subl $8, %esp         /* keep ESP 16-byte aligned at the call (i386 ABI) */
+    pushl %edi            /* info  */
+    pushl %esi            /* magic */
+    call kernel_main
+    addl $16, %esp
+
+.hang:
+    cli
+    hlt
+    jmp .hang
+
+.section .note.GNU-stack,"",@progbits

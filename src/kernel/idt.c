@@ -37,9 +37,18 @@ struct idt_ptr {
  * pusha pushes edi esi ebp esp ebx edx ecx eax (in that memory order),
  * then the stub pushed vector + error_code, then the CPU frame. */
 typedef struct {
-    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
+    uint32_t edi, esi, ebp, esp_dummy;
+    union { uint32_t ebx; uint32_t rbx; };
+    union { uint32_t edx; uint32_t rdx; };
+    union { uint32_t ecx; uint32_t rcx; };
+    union { uint32_t eax; uint32_t rax; };
     uint32_t vector, error_code;
-    uint32_t eip, cs, eflags, esp, ss;
+    union { uint32_t eip; uint32_t rip; };
+    uint32_t cs;
+    union { uint32_t eflags; uint32_t rflags; };
+    /* esp/ss are only pushed by the CPU on a ring 3 -> ring 0 transition. */
+    union { uint32_t esp; uint32_t rsp; };
+    uint32_t ss;
 } interrupt_frame_t;
 
 static struct idt_entry idt[256];
@@ -78,6 +87,17 @@ static struct idt_ptr idtp;
 /* Defined in isr.S */
 extern const uint64_t isr_stub_table[VECTOR_COUNT];
 extern void ring3_syscall_stub(void);
+#endif
+
+/* Per-arch frame accessors (syscall ABI differs: ebx on i386, rdi on x86-64). */
+#ifdef ROCKOS_ARCH_32
+#define FRAME_SYSCALL_ARG(f) ((uint64_t)(f)->rbx)
+/* For ring 0 interrupts the CPU did not push esp: it is just past eflags. */
+#define FRAME_STACK_POINTER(f) \
+    ((((f)->cs & 3) == 3) ? (uint64_t)(f)->rsp : (uint64_t)(uintptr_t)&(f)->rsp)
+#else
+#define FRAME_SYSCALL_ARG(f) ((f)->rdi)
+#define FRAME_STACK_POINTER(f) ((f)->rsp)
 #endif
 
 void interrupt_dispatch(interrupt_frame_t* frame);
@@ -177,7 +197,7 @@ static bool draw_graphical_panic(const interrupt_frame_t* f) {
     draw_hex_field(right_x, y, "CS  ", f->cs);
     y += 32;
     draw_hex_field(56, y, "RFLAGS  ", f->rflags);
-    draw_hex_field(right_x, y, "RSP  ", f->rsp);
+    draw_hex_field(right_x, y, "RSP  ", FRAME_STACK_POINTER(f));
     y += 32;
     draw_hex_field(56, y, "RAX  ", f->rax);
     draw_hex_field(right_x, y, "RBX  ", f->rbx);
@@ -185,7 +205,7 @@ static bool draw_graphical_panic(const interrupt_frame_t* f) {
     draw_hex_field(56, y, "RCX  ", f->rcx);
     draw_hex_field(right_x, y, "RDX  ", f->rdx);
     if (f->vector == 14 && y + 32 < height - 80) {
-        uint64_t cr2;
+        uintptr_t cr2;
         asm volatile ("mov %%cr2, %0" : "=r"(cr2));
         y += 32;
         draw_hex_field(56, y, "CR2  ", cr2);
@@ -223,10 +243,10 @@ static void exception_panic(const interrupt_frame_t* f) {
         put_line("RIP:        ", f->rip);
         put_line("CS:         ", f->cs);
         put_line("RFLAGS:     ", f->rflags);
-        put_line("RSP:        ", f->rsp);
+        put_line("RSP:        ", FRAME_STACK_POINTER(f));
 
         if (f->vector == 14) {
-            uint64_t cr2;
+            uintptr_t cr2;
             asm volatile ("mov %%cr2, %0" : "=r"(cr2));
             put_line("CR2:        ", cr2);
         }
@@ -285,7 +305,7 @@ static void ps2_service(void) {
 void interrupt_dispatch(interrupt_frame_t* frame) {
     if ((frame->cs & 3) == 3 && frame->vector < IRQ_BASE &&
         frame->vector != 2 && frame->vector != 8 && frame->vector != 18) {
-        uint64_t fault_address = 0;
+        uintptr_t fault_address = 0;
         if (frame->vector == 14) {
             asm volatile ("mov %%cr2, %0" : "=r"(fault_address));
         }
@@ -295,7 +315,8 @@ void interrupt_dispatch(interrupt_frame_t* frame) {
 
     if (frame->vector == RING3_SYSCALL_VECTOR) {
         if ((frame->cs & 3) == 3) {
-            frame->rax = ring3_syscall_dispatch(frame->rax, frame->rdi);
+            frame->rax = ring3_syscall_dispatch(frame->rax,
+                FRAME_SYSCALL_ARG(frame));
             return;
         }
         exception_panic(frame);
@@ -334,7 +355,7 @@ void interrupt_dispatch(interrupt_frame_t* frame) {
 
 void idt_init(void) {
     idtp.limit = sizeof(idt) - 1;
-    idtp.base = (uint64_t)&idt;
+    idtp.base = (uintptr_t)&idt;
 
     for (int i = 0; i < 256; i++) {
         idt_set_gate((uint8_t)i, 0, 0, 0);

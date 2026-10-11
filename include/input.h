@@ -22,6 +22,14 @@ typedef struct {
     bool left_btn;
     bool right_btn;
     bool middle_btn;
+    /* Latched left-button events, so a click that starts and ends between two
+     * polls of the main loop is never lost. The counters only ever increase;
+     * compare against the value you saw last time. press_x/press_y is where
+     * the pointer was when the latest press happened. */
+    uint32_t left_press_count;
+    uint32_t left_release_count;
+    int32_t press_x;
+    int32_t press_y;
 } input_mouse_state_t;
 
 #endif // ROCKOS_INPUT_H

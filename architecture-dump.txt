@@ -1,0 +1,1437 @@
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\Makefile =====
+
+TARGET64 = x86_64-elf
+TARGET32 = i686-elf
+AUDIO_BOOT_TEST_TONE ?= 1
+PYTHON ?= $(if $(wildcard /c/Python314/python.exe),/c/Python314/python.exe,python)
+LIMINE_TOOL ?= $(if $(wildcard /c/opt/limine/limine-binary/limine-tool-windows-x86/limine.exe),/c/opt/limine/limine-binary/limine-tool-windows-x86/limine.exe,limine)
+LIMINE_DATA_DIR ?= $(if $(wildcard /c/opt/limine/limine-binary),/c/opt/limine/limine-binary,$(shell "$(LIMINE_TOOL)" --print-datadir))
+
+CC64  = $(TARGET64)-gcc
+LD64  = $(TARGET64)-ld
+ASM64 = $(TARGET64)-gcc
+
+CC32  = $(TARGET32)-gcc
+LD32  = $(TARGET32)-ld
+ASM32 = $(TARGET32)-gcc
+
+CFLAGS64 = -O2 -ffreestanding -mcmodel=large -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_64=1 -c
+CFLAGS32 = -O2 -ffreestanding -march=i686 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_32=1 -c
+ASMFLAGS = -Iinclude -c
+LDFLAGS64 = -m elf_x86_64 -T linker.ld
+LDFLAGS32 = -m elf_i386 -T linker32.ld
+POWERSHELL ?= powershell.exe
+UI_ASSETS = src/drivers/ui_assets.h
+UI_FONT = assets/selawik/selawk.ttf
+UI_FONT_LICENSE = assets/selawik/OFL.txt
+
+C_SOURCES = src/kernel/kernel.c \
+            src/kernel/desktop.c \
+            src/kernel/acpi.c \
+            src/kernel/pic.c \
+            src/kernel/idt.c \
+			src/kernel/gdt.c \
+            src/drivers/display.c \
+            src/drivers/ps2.c \
+            src/drivers/keyboard.c \
+			src/drivers/mouse.c \
+			src/drivers/serial.c \
+			src/drivers/timer.c \
+			src/kernel/task.c \
+			src/kernel/process.c \
+			src/kernel/ring3.c \
+			src/kernel/paging.c \
+			src/kernel/pmm.c \
+			src/kernel/pci.c \
+			src/kernel/block.c \
+			src/kernel/filesystem.c \
+			src/drivers/ata_pio.c \
+			src/kernel/shell.c \
+			src/kernel/tour.c \
+			src/drivers/audio.c
+
+ASM64_SOURCES = src/arch/x86_64/boot.S \
+			  src/arch/x86_64/gdt_load.S \
+			  src/arch/x86_64/isr.S \
+			  src/arch/x86_64/ring3.S \
+			  src/arch/x86_64/context_switch.S \
+			  src/drivers/error_sound.S
+
+# 32-bit arch sources land in src/arch/i386/ as the port progresses
+# (boot32.S, gdt32_load.S, isr32.S, ring3_32.S, context32_switch.S).
+# They are listed here so `make ARCH=32` starts compiling them; add the
+# files incrementally. error_sound.S is shared (raw PCM + size symbols).
+ASM32_SOURCES = src/arch/i386/boot32.S \
+			  src/arch/i386/gdt32_load.S \
+			  src/arch/i386/isr32.S \
+			  src/arch/i386/ring3_32.S \
+			  src/arch/i386/context32_switch.S \
+			  src/drivers/error_sound.S
+
+OBJS64 = $(ASM64_SOURCES:.S=.o) $(C_SOURCES:.c=.o)
+# NOTE: error_sound.S is shared; 32-bit uses error_sound.32.o to avoid
+# clobbering the 64-bit error_sound.o. i386 arch objects live in their
+# own directory so plain .o is safe there.
+OBJS32_ARCH = $(filter src/arch/i386/%.S,$(ASM32_SOURCES))
+OBJS32_ARCH_O = $(OBJS32_ARCH:.S=.o)
+OBJS32 = $(OBJS32_ARCH_O) $(C_SOURCES:.c=.32.o) src/drivers/error_sound.32.o
+
+KERNEL64_BIN = rockos64.bin
+KERNEL32_BIN = rockos32.bin
+KERNEL_BIN = rockos.bin
+ISO_IMAGE = rockos.iso
+DATA_DISK = rockos-data.img
+INSTALL_DISK ?= rockos-install-target.img
+INSTALL_IMAGE = build/rockos-install.img
+INSTALL_MODULE = $(ISO_BOOT_DIR)/rockos-install.img
+ISO_DIR = iso
+ISO_BOOT_DIR = $(ISO_DIR)/boot
+
+all: $(ISO_IMAGE)
+
+# Default 64-bit objects.
+%.o: %.c
+	$(CC64) $(CFLAGS64) $< -o $@
+
+%.o: %.S
+	$(ASM64) $(ASMFLAGS) $< -o $@
+
+# Parallel 32-bit objects (foo.c -> foo.32.o) so both kernels can build
+# from the same tree without clobbering each other.
+%.32.o: %.c
+	$(CC32) $(CFLAGS32) $< -o $@
+
+src/arch/i386/%.o: src/arch/i386/%.S
+	$(ASM32) $(ASMFLAGS) $< -o $@
+
+src/drivers/error_sound.o: assets/error_48000_stereo_s16le.pcm
+
+src/drivers/error_sound.32.o: assets/error_48000_stereo_s16le.pcm
+	$(ASM32) $(ASMFLAGS) src/drivers/error_sound.S -o $@
+
+$(UI_ASSETS): $(UI_FONT) $(UI_FONT_LICENSE) assets/rockos-logo-outlined.png scripts/generate_ui_assets.ps1
+	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/generate_ui_assets.ps1 \
+		-FontPath $(UI_FONT) \
+		-LogoPath assets/rockos-logo-outlined.png \
+		-OutputPath $(UI_ASSETS)
+
+src/drivers/display.o: $(UI_ASSETS)
+
+$(ISO_BOOT_DIR)/selawik-OFL.txt: $(UI_FONT_LICENSE)
+	mkdir -p $(ISO_BOOT_DIR)
+	cp $< $@
+
+$(KERNEL64_BIN): $(OBJS64) linker.ld
+	$(LD64) $(LDFLAGS64) $(OBJS64) -o $(KERNEL64_BIN)
+
+$(KERNEL_BIN): $(KERNEL64_BIN)
+	cp $< $@
+
+$(ISO_BOOT_DIR)/limine-bios.sys: $(LIMINE_DATA_DIR)/limine-bios.sys
+	cp $< $@
+
+$(ISO_BOOT_DIR)/limine-bios-cd.bin: $(LIMINE_DATA_DIR)/limine-bios-cd.bin
+	cp $< $@
+
+$(ISO_BOOT_DIR)/limine-uefi-cd.bin: $(LIMINE_DATA_DIR)/limine-uefi-cd.bin
+	cp $< $@
+
+$(ISO_DIR)/EFI/BOOT/BOOTX64.EFI: $(LIMINE_DATA_DIR)/BOOTX64.EFI
+	mkdir -p $(ISO_DIR)/EFI/BOOT
+	cp $< $@
+
+$(INSTALL_IMAGE): $(KERNEL_BIN) $(ISO_BOOT_DIR)/limine-bios.sys $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(ISO_BOOT_DIR)/limine-disk.conf scripts/make_install_image.py
+	$(PYTHON) scripts/make_install_image.py \
+		--kernel $(KERNEL_BIN) \
+		--bios $(ISO_BOOT_DIR)/limine-bios.sys \
+		--efi $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI \
+		--config $(ISO_BOOT_DIR)/limine-disk.conf \
+		--output $@
+	"$(LIMINE_TOOL)" bios-install $@
+
+$(INSTALL_MODULE): $(INSTALL_IMAGE)
+	cp $< $@
+
+$(ISO_IMAGE): $(KERNEL_BIN) $(ISO_BOOT_DIR)/limine-bios.sys $(ISO_BOOT_DIR)/limine-bios-cd.bin $(ISO_BOOT_DIR)/limine-uefi-cd.bin $(ISO_BOOT_DIR)/limine.conf $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_MODULE) $(ISO_BOOT_DIR)/selawik-OFL.txt
+	mkdir -p $(ISO_BOOT_DIR)
+	cp $(KERNEL_BIN) $(ISO_BOOT_DIR)/rockos.bin
+	xorriso -as mkisofs -R -r -J \
+		-b boot/limine-bios-cd.bin \
+		-no-emul-boot \
+		-boot-load-size 4 \
+		-boot-info-table \
+		--efi-boot boot/limine-uefi-cd.bin \
+		-efi-boot-part \
+		--efi-boot-image \
+		-o $(ISO_IMAGE) $(ISO_DIR)
+
+$(DATA_DISK):
+	qemu-img create -f raw $@ 16M
+
+$(INSTALL_DISK):
+	qemu-img create -f raw $@ 64M
+
+# Keep the install target first so reboot boots it; leave the CD as fallback.
+run: $(ISO_IMAGE) $(DATA_DISK) $(INSTALL_DISK)
+	qemu-system-x86_64 -machine pc -serial stdio \
+		-audiodev driver=dsound,id=audio0 \
+		-device AC97,audiodev=audio0 \
+		-drive file=$(INSTALL_DISK),format=raw,if=none,id=target \
+		-device ide-hd,drive=target,bus=ide.0,unit=1,bootindex=1 \
+		-drive file=$(DATA_DISK),format=raw,if=none,id=data \
+		-device ide-hd,drive=data,bus=ide.0,unit=0,bootindex=2 \
+		-drive file=$(ISO_IMAGE),format=raw,media=cdrom,if=none,id=installcd,readonly=on \
+		-device ide-cd,drive=installcd,bus=ide.1,unit=0,bootindex=3
+
+run-installed: $(INSTALL_DISK) $(DATA_DISK)
+	qemu-system-x86_64 -machine pc -boot order=c \
+		-audiodev driver=dsound,id=audio0 \
+		-device AC97,audiodev=audio0 \
+		-drive file=$(INSTALL_DISK),format=raw,if=ide,index=0 \
+		-drive file=$(DATA_DISK),format=raw,if=ide,index=1
+
+clean:
+	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS)
+
+.PHONY: all run run-installed clean
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\linker.ld =====
+
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 1M;
+    __kernel_start = .;
+
+    .text ALIGN(4K) :
+    {
+        *(.multiboot)
+        *(.text*)
+    }
+
+    .rodata ALIGN(4K) :
+    {
+        *(.rodata*)
+    }
+
+    .data ALIGN(4K) :
+    {
+        *(.data*)
+    }
+
+    .bss ALIGN(4K) :
+    {
+        *(COMMON)
+        *(.bss*)
+        *(.lbss*)
+    }
+
+    __kernel_end = .;
+}
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\linker32.ld =====
+
+/* linker32.ld - 32-bit RockOS link (V86 / older PCs).
+ * Mirrors linker.ld; only the output format differs. The 64-bit
+ * linker.ld path is untouched. OUTPUT_FORMAT keeps i686-elf-ld
+ * from emitting a 64-bit ELF.
+ */
+OUTPUT_FORMAT("elf32-i386")
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 1M;
+    __kernel_start = .;
+
+    .text ALIGN(4K) :
+    {
+        *(.multiboot)
+        *(.text*)
+    }
+
+    .rodata ALIGN(4K) :
+    {
+        *(.rodata*)
+    }
+
+    .data ALIGN(4K) :
+    {
+        *(.data*)
+    }
+
+    .bss ALIGN(4K) :
+    {
+        *(COMMON)
+        *(.bss*)
+        *(.lbss*)
+    }
+
+    __kernel_end = .;
+}
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\i386\boot32.S =====
+
+/* src/arch/i386/boot32.S
+ *
+ * 32-bit protected-mode entry for RockOS (V86 / older PCs).
+ * 64-bit path in src/arch/x86_64/boot.S is untouched.
+ *
+ * Contract with Limine/Multiboot1 (same as 64-bit):
+ *   EAX = magic, EBX = info pointer on entry.
+ *   kernel_main(magic, info) with both zero-extended to 32-bit.
+ *
+ * Paging: identity-map the first 1 GiB with 4 MiB large pages in a
+ * single page directory (256 entries), then enable PG+PE. This matches
+ * PMM_IDENTITY_MAP_LIMIT and needs no 64-bit tables.
+ */
+.code32
+
+.global _start
+.extern kernel_main
+
+.set ALIGN,    1<<0
+.set MEMINFO,  1<<1
+.set VIDEO,    1<<2
+.set FLAGS,    ALIGN | MEMINFO | VIDEO
+.set MAGIC,    0x1BADB002
+.set CHECKSUM, -(MAGIC + FLAGS)
+
+.section .multiboot, "a"
+.align 4
+.long MAGIC
+.long FLAGS
+.long CHECKSUM
+/* Keep the optional address-field slots so Multiboot graphics fields land at
+ * their specified fixed offsets even when flag 16 is clear. */
+.long 0
+.long 0
+.long 0
+.long 0
+.long 0
+/* Linear framebuffer mode, 1024x768x32. */
+.long 0
+.long 1024
+.long 768
+.long 32
+
+.section .bss
+.align 4096
+pd_table:
+    .skip 4096
+.global boot_stack_bottom
+boot_stack_bottom:
+    .skip 16384
+.global boot_stack_top
+boot_stack_top:
+
+.section .text
+_start:
+    movl %eax, %esi        /* magic -> ESI (callee-saved across setup) */
+    movl %ebx, %edi        /* info  -> EDI */
+    mov $boot_stack_top, %esp
+
+    /* Build PD: 256 x 4MiB large pages covering 0..1GiB, P+RW. */
+    mov $pd_table, %eax
+    mov $0, %ecx
+.map_pd:
+    mov %ecx, %edx
+    shl $22, %edx          /* phys base = ecx * 4MiB */
+    or $0x83, %edx         /* P | RW | PS(4MiB) */
+    mov %edx, (%eax,%ecx,4)
+    inc %ecx
+    cmp $256, %ecx
+    jne .map_pd
+
+    /* Zero the remaining 768 entries (3..4GiB unmapped for now). */
+    mov $256, %ecx
+.clear_pd:
+    movl $0, (%eax,%ecx,4)
+    inc %ecx
+    cmp $1024, %ecx
+    jne .clear_pd
+
+    mov $pd_table, %eax
+    mov %eax, %cr3
+
+    mov %cr4, %eax
+    or $(1 << 4), %eax    /* PSE: allow 4MiB pages */
+    mov %eax, %cr4
+
+    mov %cr0, %eax
+    or $0x80000001, %eax  /* PG + PE */
+    mov %eax, %cr0
+
+    /* Stack is identity-mapped, flat segments from BIOS are fine.
+     * GDT/IDT are installed later by kernel_main via gdt32/idt32. */
+    subl $8, %esp         /* keep ESP 16-byte aligned at the call (i386 ABI) */
+    pushl %edi            /* info  */
+    pushl %esi            /* magic */
+    call kernel_main
+    addl $16, %esp
+
+.hang:
+    cli
+    hlt
+    jmp .hang
+
+.section .note.GNU-stack,"",@progbits
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\i386\context32_switch.S =====
+
+/* src/arch/i386/context32_switch.S
+ *
+ * 32-bit context switch. Mirrors src/arch/x86_64/context_switch.S.
+ *
+ * C prototype:
+ *   void context_switch(uintptr_t* old_sp, uintptr_t new_sp);
+ * On i386: old_sp at 4(%esp), new_sp at 8(%esp).
+ * Callee-saved: ebx, ebp, esi, edi.
+ */
+.code32
+
+.section .text
+.global context_switch
+.type context_switch, @function
+context_switch:
+    pushl %ebx
+    pushl %ebp
+    pushl %esi
+    pushl %edi
+
+    movl 20(%esp), %eax      /* old_sp (4 regs pushed + ret addr = 20) */
+    movl %esp, (%eax)
+    movl 24(%esp), %eax      /* new_sp */
+    movl %eax, %esp
+
+    popl %edi
+    popl %esi
+    popl %ebp
+    popl %ebx
+    ret
+
+.size context_switch, .-context_switch
+.section .note.GNU-stack,"",@progbits
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\i386\divdi3.c =====
+
+/*
+ * src/arch/i386/divdi3.c
+ *
+ * 64-bit division/modulo helpers for the 32-bit (i386) RockOS build.
+ *
+ * On i386 GCC lowers every uint64_t '/' and '%' to calls to __udivdi3,
+ * __umoddi3, __divdi3 and __moddi3, normally supplied by libgcc. The
+ * x86_64-elf toolchain has no 32-bit libgcc, so we provide them here.
+ *
+ * IMPORTANT: this file must never use '/' or '%' on 64-bit values itself
+ * (that would recurse). Only shifts, compares and adds on 64-bit values,
+ * plus native 32-bit divides.
+ */
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* edx:eax / divisor -> eax quotient, edx remainder. Requires hi < divisor. */
+static inline uint32_t div_64_by_32(uint32_t hi, uint32_t lo, uint32_t divisor,
+    uint32_t* remainder)
+{
+    uint32_t quotient, rem;
+    __asm__ ("divl %4"
+        : "=a"(quotient), "=d"(rem)
+        : "a"(lo), "d"(hi), "rm"(divisor)
+        : "cc");
+    *remainder = rem;
+    return quotient;
+}
+
+uint64_t __udivmoddi4(uint64_t n, uint64_t d, uint64_t* rem)
+{
+    if (d == 0) {
+        /* Real hardware would raise #DE; keep going with a sentinel. */
+        if (rem) *rem = n;
+        return ~(uint64_t)0;
+    }
+
+    /* Fast path: divisor fits in 32 bits (ticks / 100, value % 10, ...). */
+    if ((d >> 32) == 0) {
+        uint32_t d32 = (uint32_t)d;
+        uint32_t hi = (uint32_t)(n >> 32);
+        uint32_t lo = (uint32_t)n;
+        uint32_t q_hi = hi / d32;          /* native 32-bit divide */
+        uint32_t r_hi = hi % d32;
+        uint32_t r_lo;
+        uint32_t q_lo = div_64_by_32(r_hi, lo, d32, &r_lo);
+        if (rem) *rem = r_lo;
+        return ((uint64_t)q_hi << 32) | q_lo;
+    }
+
+    /* Slow path: divisor >= 2^32, so the quotient is < 2^32. Shift-subtract. */
+    {
+        uint64_t q = 0;
+        uint64_t r = 0;
+        for (int i = 0; i < 64; i++) {
+            uint64_t carry = r >> 63;
+            r = (r << 1) | (n >> 63);
+            n <<= 1;
+            q <<= 1;
+            if (carry || r >= d) {
+                r -= d;
+                q |= 1;
+            }
+        }
+        if (rem) *rem = r;
+        return q;
+    }
+}
+
+__attribute__((used)) uint64_t __udivdi3(uint64_t n, uint64_t d)
+{
+    return __udivmoddi4(n, d, 0);
+}
+
+__attribute__((used)) uint64_t __umoddi3(uint64_t n, uint64_t d)
+{
+    uint64_t r;
+    __udivmoddi4(n, d, &r);
+    return r;
+}
+
+__attribute__((used)) int64_t __divdi3(int64_t a, int64_t b)
+{
+    bool negative = (a < 0) != (b < 0);
+    uint64_t ua = a < 0 ? (uint64_t)0 - (uint64_t)a : (uint64_t)a;
+    uint64_t ub = b < 0 ? (uint64_t)0 - (uint64_t)b : (uint64_t)b;
+    uint64_t q = __udivmoddi4(ua, ub, 0);
+    return negative ? (int64_t)((uint64_t)0 - q) : (int64_t)q;
+}
+
+__attribute__((used)) int64_t __moddi3(int64_t a, int64_t b)
+{
+    uint64_t ua = a < 0 ? (uint64_t)0 - (uint64_t)a : (uint64_t)a;
+    uint64_t ub = b < 0 ? (uint64_t)0 - (uint64_t)b : (uint64_t)b;
+    uint64_t r;
+    __udivmoddi4(ua, ub, &r);
+    return a < 0 ? (int64_t)((uint64_t)0 - r) : (int64_t)r;
+}
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\i386\gdt32_load.S =====
+
+/* src/arch/i386/gdt32_load.S
+ *
+ * 32-bit protected-mode GDT reload (V86 / older PCs).
+ * Mirrors src/arch/x86_64/gdt_load.S but with 32-bit segments:
+ *   0x08 = kernel code, 0x10 = kernel data, 0x28 = TSS.
+ *
+ * C prototype: void gdt_load(const gdt_pointer_t* pointer);
+ * On i386 the pointer arrives on the stack at 4(%esp).
+ */
+.code32
+
+.section .text
+.global gdt_load
+.type gdt_load, @function
+gdt_load:
+    movl 4(%esp), %eax
+    lgdt (%eax)
+
+    ljmp $0x08, $.Lgdt32_reloaded
+.Lgdt32_reloaded:
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %fs
+    movw %ax, %gs
+    movw %ax, %ss
+
+    movw $0x28, %ax
+    ltr %ax
+    ret
+
+.size gdt_load, .-gdt_load
+.section .note.GNU-stack,"",@progbits
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\i386\isr32.S =====
+
+/*
+ * src/arch/i386/isr32.S
+ *
+ * 32-bit protected-mode stubs for vectors 0-47 (CPU exceptions + remapped
+ * PIC IRQs), plus the dedicated Ring 3 syscall vector 128. Mirrors
+ * src/arch/x86_64/isr.S.
+ *
+ * Frame layout (lowest address first) must match interrupt_frame_t32 in
+ * idt.c when ROCKOS_ARCH_32 is defined:
+ *   edi esi ebp esp_dummy ebx edx ecx eax
+ *   vector error_code
+ *   eip cs eflags esp ss          <- pushed by the CPU
+ *
+ * (esp_dummy is pushed by pusha; the CPU-pushed esp is the one after
+ * eflags. The C struct reads the CPU frame, not the pusha slot.)
+ */
+
+.code32
+
+.extern interrupt_dispatch
+.extern task_interrupt_exit
+
+.section .text
+.global ring3_syscall_stub
+ring3_syscall_stub:
+    pushl $0
+    pushl $128
+    jmp isr32_common
+
+/* Vectors where the CPU does NOT push an error code: push a dummy 0. */
+.macro ISR32_NOERR num
+    .section .text
+isr32_stub_\num:
+    pushl $0
+    pushl $\num
+    jmp isr32_common
+    .section .rodata
+    .long isr32_stub_\num
+.endm
+
+/* Vectors where the CPU pushes an error code itself. */
+.macro ISR32_ERR num
+    .section .text
+isr32_stub_\num:
+    pushl $\num
+    jmp isr32_common
+    .section .rodata
+    .long isr32_stub_\num
+.endm
+
+/* Table of stub addresses, read by idt_init(). Nothing else may be emitted
+ * into .rodata between here and the last ISR32_* line. */
+.section .rodata
+.balign 4
+.global isr_stub_table
+isr_stub_table:
+
+/* CPU exceptions */
+ISR32_NOERR 0
+ISR32_NOERR 1
+ISR32_NOERR 2
+ISR32_NOERR 3
+ISR32_NOERR 4
+ISR32_NOERR 5
+ISR32_NOERR 6
+ISR32_NOERR 7
+ISR32_ERR   8
+ISR32_NOERR 9
+ISR32_ERR   10
+ISR32_ERR   11
+ISR32_ERR   12
+ISR32_ERR   13
+ISR32_ERR   14
+ISR32_NOERR 15
+ISR32_NOERR 16
+ISR32_ERR   17
+ISR32_NOERR 18
+ISR32_NOERR 19
+ISR32_NOERR 20
+ISR32_ERR   21
+ISR32_NOERR 22
+ISR32_NOERR 23
+ISR32_NOERR 24
+ISR32_NOERR 25
+ISR32_NOERR 26
+ISR32_NOERR 27
+ISR32_NOERR 28
+ISR32_ERR   29
+ISR32_ERR   30
+ISR32_NOERR 31
+
+/* PIC IRQs 0-15 -> vectors 32-47 */
+ISR32_NOERR 32
+ISR32_NOERR 33
+ISR32_NOERR 34
+ISR32_NOERR 35
+ISR32_NOERR 36
+ISR32_NOERR 37
+ISR32_NOERR 38
+ISR32_NOERR 39
+ISR32_NOERR 40
+ISR32_NOERR 41
+ISR32_NOERR 42
+ISR32_NOERR 43
+ISR32_NOERR 44
+ISR32_NOERR 45
+ISR32_NOERR 46
+ISR32_NOERR 47
+
+.section .bss
+.align 4
+isr32_saved_frame:
+    .skip 4
+
+.section .text
+isr32_common:
+    pusha
+    cld                         /* SysV ABI: DF must be clear when calling C */
+
+    /* Pass frame pointer as the single C argument. */
+    movl %esp, %eax
+    pushl %eax
+    call interrupt_dispatch
+    addl $4, %esp
+
+    /* vector slot = 32 (pusha). Skip scheduling for the syscall vector,
+     * which returns to user mode via its own path. */
+    cmpl $128, 32(%esp)
+    je .Lisr32_skip_task_exit
+
+    /* task_interrupt_exit() may switch to another task's stack, so the
+     * frame pointer cannot live on the stack across the call. */
+    movl %esp, isr32_saved_frame
+    call task_interrupt_exit
+    movl isr32_saved_frame, %esp
+
+.Lisr32_skip_task_exit:
+    popa
+    addl $8, %esp               /* drop vector + error code */
+    iret
+
+.section .note.GNU-stack,"",@progbits
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\i386\paging32.c =====
+
+/*
+ * src/arch/i386/paging32.c
+ *
+ * 32-bit (non-PAE) paging for the i386 RockOS build. Same public API as
+ * src/kernel/paging.c (x86-64, 4-level), so the rest of the kernel does not
+ * care which one it links.
+ *
+ * Layout of every address space:
+ *   0x00000000 - 0x3FFFFFFF  identity map, supervisor, 4 MiB large pages
+ *                            (needs CR4.PSE, enabled in boot32.S)
+ *   0x40000000 - 0xBFFFFFFF  free for user mappings (4 KiB pages)
+ *   0xE0000000 - 0xFFFFFFFF  kernel MMIO window (framebuffer, PCI BARs);
+ *                            page tables shared with the kernel directory
+ *
+ * The "pml4_address" parameters in paging.h are simply the page-directory
+ * physical address here.
+ */
+
+#include "paging.h"
+
+#include "pmm.h"
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define P32_PRESENT      0x001U
+#define P32_WRITABLE     0x002U
+#define P32_USER         0x004U
+#define P32_PWT          0x008U
+#define P32_PCD          0x010U
+#define P32_LARGE        0x080U
+#define P32_ADDR_MASK    0xFFFFF000U
+#define P32_LARGE_FLAGS  (P32_PRESENT | P32_WRITABLE | P32_LARGE)
+#define P32_TABLE_FLAGS  (P32_PRESENT | P32_WRITABLE)
+
+#define P32_ENTRIES         1024U
+#define P32_KERNEL_LARGE    256U            /* 256 x 4 MiB = 1 GiB */
+#define P32_USER_LIMIT      0xC0000000U
+#define P32_MMIO_BASE       0xE0000000U
+#define P32_MMIO_FIRST_PDE  (P32_MMIO_BASE >> 22)
+
+static uintptr_t kernel_address_space;
+static uint32_t kernel_mmio_next_virtual = P32_MMIO_BASE;
+
+static void clear_table(uint32_t* table) {
+    for (size_t index = 0; index < P32_ENTRIES; index++) {
+        table[index] = 0;
+    }
+}
+
+static bool table_is_empty(const uint32_t* table) {
+    for (size_t index = 0; index < P32_ENTRIES; index++) {
+        if (table[index] & P32_PRESENT) return false;
+    }
+    return true;
+}
+
+static bool valid_page_address(uintptr_t address) {
+    return (address & (PMM_PAGE_SIZE - 1)) == 0;
+}
+
+static inline void invalidate_page(uintptr_t address) {
+    asm volatile("invlpg (%0)" : : "r"(address) : "memory");
+}
+
+uintptr_t paging_current_address_space(void) {
+    uintptr_t address;
+    asm volatile("mov %%cr3, %0" : "=r"(address));
+    return address;
+}
+
+void paging_init(void) {
+    if (!kernel_address_space) {
+        kernel_address_space = paging_current_address_space() & P32_ADDR_MASK;
+    }
+}
+
+uintptr_t paging_address_space_create(void) {
+    uint32_t* pd = (uint32_t*)pmm_alloc(1);
+    if (!pd) return 0;
+
+    paging_init();
+    clear_table(pd);
+    for (uint32_t index = 0; index < P32_KERNEL_LARGE; index++) {
+        pd[index] = (index << 22) | P32_LARGE_FLAGS;
+    }
+
+    /* Share the kernel MMIO window (framebuffer etc.) with every address
+     * space so drawing keeps working if a task with a user directory is
+     * running when the scheduler switches to the UI loop. */
+    if (kernel_address_space) {
+        const uint32_t* kernel_pd = (const uint32_t*)kernel_address_space;
+        for (uint32_t index = P32_MMIO_FIRST_PDE; index < P32_ENTRIES; index++) {
+            pd[index] = kernel_pd[index];
+        }
+    }
+    return (uintptr_t)pd;
+}
+
+bool paging_map_user_page(uintptr_t pd_address, uintptr_t virtual_address,
+    uintptr_t physical_address, bool writable) {
+    if (!pd_address || !valid_page_address(pd_address) ||
+        !valid_page_address(virtual_address) ||
+        !valid_page_address(physical_address) ||
+        physical_address >= PMM_IDENTITY_MAP_LIMIT ||
+        virtual_address >= P32_USER_LIMIT) {
+        return false;
+    }
+
+    uint32_t* pd = (uint32_t*)pd_address;
+    size_t pd_index = virtual_address >> 22;
+    size_t pt_index = (virtual_address >> 12) & 0x3FF;
+    uint32_t* pt;
+    bool allocated_pt = false;
+
+    if (!(pd[pd_index] & P32_PRESENT)) {
+        pt = (uint32_t*)pmm_alloc(1);
+        if (!pt) return false;
+        clear_table(pt);
+        pd[pd_index] = (uint32_t)(uintptr_t)pt |
+            P32_PRESENT | P32_WRITABLE | P32_USER;
+        allocated_pt = true;
+    } else {
+        if (pd[pd_index] & P32_LARGE) return false;
+        pt = (uint32_t*)(uintptr_t)(pd[pd_index] & P32_ADDR_MASK);
+    }
+
+    if (pt[pt_index] & P32_PRESENT) {
+        if (allocated_pt) {
+            pd[pd_index] = 0;
+            pmm_free(pt, 1);
+        }
+        return false;
+    }
+
+    pd[pd_index] |= P32_USER | P32_WRITABLE;
+    pt[pt_index] = (uint32_t)physical_address | P32_PRESENT | P32_USER |
+        (writable ? P32_WRITABLE : 0U);
+    return true;
+}
+
+bool paging_unmap_user_page(uintptr_t pd_address, uintptr_t virtual_address,
+    uintptr_t* physical_address) {
+    if (!pd_address || !valid_page_address(pd_address) ||
+        !valid_page_address(virtual_address) ||
+        virtual_address >= P32_USER_LIMIT || !physical_address) {
+        return false;
+    }
+
+    uint32_t* pd = (uint32_t*)pd_address;
+    size_t pd_index = virtual_address >> 22;
+    size_t pt_index = (virtual_address >> 12) & 0x3FF;
+    if (!(pd[pd_index] & P32_PRESENT) || (pd[pd_index] & P32_LARGE)) {
+        return false;
+    }
+
+    uint32_t* pt = (uint32_t*)(uintptr_t)(pd[pd_index] & P32_ADDR_MASK);
+    uint32_t entry = pt[pt_index];
+    if (!(entry & P32_PRESENT) || !(entry & P32_USER)) {
+        return false;
+    }
+
+    *physical_address = (uintptr_t)(entry & P32_ADDR_MASK);
+    pt[pt_index] = 0;
+    invalidate_page(virtual_address);
+    if (table_is_empty(pt)) {
+        pd[pd_index] = 0;
+        if (!pmm_free(pt, 1)) return false;
+    }
+    return true;
+}
+
+bool paging_address_space_destroy(uintptr_t pd_address) {
+    if (!pd_address || (pd_address & (PMM_PAGE_SIZE - 1)) != 0) {
+        return false;
+    }
+
+    uint32_t* pd = (uint32_t*)pd_address;
+    if ((pd[0] & P32_LARGE_FLAGS) != P32_LARGE_FLAGS) return false;
+    /* User page tables are freed by paging_unmap_user_page; the shared
+     * kernel MMIO tables must NOT be freed here. */
+    return pmm_free(pd, 1);
+}
+
+void paging_load_address_space(uintptr_t pd_address) {
+    if (!pd_address || (pd_address & (PMM_PAGE_SIZE - 1)) != 0) return;
+    asm volatile("mov %0, %%cr3" : : "r"(pd_address) : "memory");
+}
+
+bool paging_map_kernel_mmio(uintptr_t physical_address, size_t byte_count,
+    uintptr_t* virtual_address) {
+    if (!physical_address || !byte_count || !virtual_address) return false;
+
+    uint32_t page_offset = (uint32_t)(physical_address & (PMM_PAGE_SIZE - 1));
+    uint32_t physical_page = (uint32_t)physical_address & P32_ADDR_MASK;
+    uint64_t span = (uint64_t)page_offset + byte_count;
+    uint64_t page_count = (span + (PMM_PAGE_SIZE - 1)) >> 12;
+    uint64_t map_size = page_count << 12;
+
+    if ((uint64_t)physical_page + map_size > 0x100000000ULL) return false;
+    if ((uint64_t)kernel_mmio_next_virtual + map_size > 0x100000000ULL) {
+        return false;
+    }
+
+    paging_init();
+    uint32_t* pd = (uint32_t*)kernel_address_space;
+    uint32_t map_start = kernel_mmio_next_virtual;
+
+    for (uint64_t page = 0; page < page_count; page++) {
+        uint32_t va = map_start + (uint32_t)(page << 12);
+        size_t pd_index = va >> 22;
+        size_t pt_index = (va >> 12) & 0x3FF;
+        uint32_t* pt;
+
+        if (!(pd[pd_index] & P32_PRESENT)) {
+            pt = (uint32_t*)pmm_alloc(1);
+            if (!pt) return false;
+            clear_table(pt);
+            pd[pd_index] = (uint32_t)(uintptr_t)pt | P32_TABLE_FLAGS;
+        } else {
+            if (pd[pd_index] & P32_LARGE) return false;
+            pt = (uint32_t*)(uintptr_t)(pd[pd_index] & P32_ADDR_MASK);
+        }
+        if (pt[pt_index] & P32_PRESENT) return false;
+
+        /* Uncached (PWT|PCD), same as the x86-64 mapping. */
+        pt[pt_index] = (physical_page + (uint32_t)(page << 12)) |
+            P32_PRESENT | P32_WRITABLE | P32_PWT | P32_PCD;
+        invalidate_page(va);
+    }
+
+    kernel_mmio_next_virtual += (uint32_t)map_size;
+    *virtual_address = (uintptr_t)(map_start + page_offset);
+    return true;
+}
+
+uintptr_t paging_kernel_address_space(void) {
+    paging_init();
+    return kernel_address_space;
+}
+
+void paging_restore_kernel_address_space(void) {
+    paging_load_address_space(paging_kernel_address_space());
+}
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\i386\ring3_32.S =====
+
+/* src/arch/i386/ring3_32.S
+ *
+ * 32-bit ring-3 entry + test programs. Mirrors src/arch/x86_64/ring3.S.
+ *
+ * C prototype: void ring3_enter(uintptr_t user_eip, uintptr_t user_esp);
+ * On i386: eip at 4(%esp), esp at 8(%esp). Builds an iret frame:
+ *   ss=0x23, esp, eflags(IF=1), cs=0x1B, eip. Matches the 32-bit GDT
+ *   layout installed by gdt.c (user code 0x1B, user data 0x23).
+ */
+.code32
+
+.section .text
+.global ring3_enter
+.type ring3_enter, @function
+ring3_enter:
+    movl 4(%esp), %eax       /* user eip */
+    movl 8(%esp), %ecx       /* user esp */
+    pushl $0x23
+    pushl %ecx
+    pushl $0x202             /* IF=1, bit1 always set */
+    pushl $0x1B
+    pushl %eax
+    iret
+.size ring3_enter, .-ring3_enter
+
+.section .rodata
+.global ring3_user_test_program_start
+.global ring3_user_test_program_end
+ring3_user_test_program_start:
+    /* putchar('U') via int 0x80: eax=PUTCHAR(1), ebx='U' */
+    .byte 0xB8, 0x01, 0x00, 0x00, 0x00   /* mov $1, %eax */
+    .byte 0xBB, 0x55, 0x00, 0x00, 0x00   /* mov $0x55, %ebx */
+    .byte 0xCD, 0x80                     /* int $0x80 */
+    .byte 0xBB, 0x0A, 0x00, 0x00, 0x00   /* mov $0x0A, %ebx */
+    .byte 0xCD, 0x80                     /* int $0x80 */
+    .byte 0x31, 0xC0                     /* xor %eax, %eax (EXIT=0) */
+    .byte 0xCD, 0x80                     /* int $0x80 */
+    .byte 0x0F, 0x0B                     /* ud2 (unreachable) */
+ring3_user_test_program_end:
+
+.global ring3_fault_program_start
+.global ring3_fault_program_end
+ring3_fault_program_start:
+    .byte 0x31, 0xC0                     /* xor %eax, %eax */
+    .byte 0xA1                           /* mov 0x100000, %eax */
+    .long 0x00100000
+    .byte 0xCD, 0x80                     /* int $0x80 (unreachable) */
+    .byte 0x0F, 0x0B                     /* ud2 */
+ring3_fault_program_end:
+
+.section .note.GNU-stack,"",@progbits
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\boot.o =====
+
+ELF          >                               @     @ 
+ 
+  Ƽ                                        
+          A     u     "     "เ   2
+   0  
+    "           f   ؎    Љ                      OR                                                                                                                                                                                                                                                             !        OR             *                      3                     k                                            <                      B                     M                     X                     f      &               t      z                                      }                            0                     p                                      ALIGN MEMINFO VIDEO FLAGS MAGIC CHECKSUM p4_table p3_table gdt64 gdt64_code gdt64_data gdt64_pointer .map_p2_table long_mode_start .hang boot_stack_bottom boot_stack_top kernel_main         
+                     
+                    
+                     
+                     
+             5       
+              C       
+              o       
+             t       
+      z                                                   .symtab .strtab .shstrtab .rela.text .data .bss .multiboot .rela.rodata                                                                                              @                                            @               (                                  &                                                            ,                              p                             1                             0                              A                           "                              <      @                                                                      0      @      	                    	                      p                                                           0      I                              
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\boot.S =====
+
+.code32
+.global _start
+.extern kernel_main
+
+.set ALIGN,    1<<0
+.set MEMINFO,  1<<1
+.set VIDEO,    1<<2
+.set FLAGS,    ALIGN | MEMINFO | VIDEO
+.set MAGIC,    0x1BADB002
+.set CHECKSUM, -(MAGIC + FLAGS)
+
+.section .multiboot, "a"
+.align 4
+.long MAGIC
+.long FLAGS
+.long CHECKSUM
+/* Keep the optional address-field slots so Multiboot graphics fields land at
+ * their specified fixed offsets even when flag 16 is clear. */
+.long 0
+.long 0
+.long 0
+.long 0
+.long 0
+/* Linear framebuffer mode, 1024x768x32. */
+.long 0
+.long 1024
+.long 768
+.long 32
+
+.section .bss
+.align 4096
+p4_table:
+    .skip 4096
+p3_table:
+    .skip 4096
+p2_table:
+    .skip 4096
+.global boot_stack_bottom
+boot_stack_bottom:
+    .skip 16384
+.global boot_stack_top
+boot_stack_top:
+
+.section .rodata
+gdt64:
+    .quad 0
+gdt64_code:
+    .quad (1<<43) | (1<<44) | (1<<47) | (1<<53)
+gdt64_data:
+    .quad (1<<41) | (1<<44) | (1<<47)
+gdt64_pointer:
+    .word . - gdt64 - 1
+    .quad gdt64
+
+.section .text
+_start:
+    movl %eax, %esi
+    mov $boot_stack_top, %esp
+
+    mov $p3_table, %eax
+    or $0x3, %eax
+    mov %eax, p4_table
+
+    mov $p2_table, %eax
+    or $0x3, %eax
+    mov %eax, p3_table
+
+    mov $0, %ecx
+.map_p2_table:
+    mov $0x200000, %eax
+    mul %ecx
+    or $0x83, %eax
+    mov %eax, p2_table(,%ecx,8)
+    inc %ecx
+    cmp $512, %ecx
+    jne .map_p2_table
+
+    mov $p4_table, %eax
+    mov %eax, %cr3
+
+    mov %cr4, %eax
+    or $(1 << 5), %eax
+    mov %eax, %cr4
+
+    mov $0xC0000080, %ecx
+    rdmsr
+    or $(1 << 8), %eax
+    wrmsr
+
+    mov %cr0, %eax
+    or $(1 << 31), %eax
+    mov %eax, %cr0
+
+    lgdt (gdt64_pointer)
+    ljmp $0x08, $long_mode_start
+
+.code64
+long_mode_start:
+    mov $0x10, %ax
+    mov %ax, %ds
+    mov %ax, %es
+    mov %ax, %fs
+    mov %ax, %gs
+    mov %ax, %ss
+
+    movl %esi, %edi
+    movl %ebx, %esi
+    call kernel_main
+
+.hang:
+    cli
+    hlt
+    jmp .hang
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\context_switch.o =====
+
+ELF          >                                @     @    SUATAUAVAWH 'H  A_A^A]A\][                                                   context_switch  .symtab .strtab .shstrtab .text .data .bss .note.GNU-stack                                                                                          @                                     !                     [                                      '                     [                                      ,                      [                                                            `       0                           	                                                                                          <                              
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\context_switch.S =====
+
+.code64
+
+.section .text
+.global context_switch
+.type context_switch, @function
+context_switch:
+    pushq %rbx
+    pushq %rbp
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    movq %rsp, (%rdi)
+    movq %rsi, %rsp
+
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rbp
+    popq %rbx
+    ret
+
+.size context_switch, .-context_switch
+.section .note.GNU-stack,"",@progbits
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\gdt_load.o =====
+
+ELF          >                                @     @    jH    PH f   ؎   f (                                                !        gdt_load  .symtab .strtab .shstrtab .text .data .bss .note.GNU-stack                                                                                        @       !                              !                     a                                      '                     a                                      ,                      a                                                            h       0                           	                              
+                                                            <                              
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\gdt_load.S =====
+
+.code64
+
+.section .text
+.global gdt_load
+.type gdt_load, @function
+gdt_load:
+    lgdt (%rdi)
+
+    pushq $0x08
+    leaq .Lgdt_reloaded(%rip), %rax
+    pushq %rax
+    lretq
+
+.Lgdt_reloaded:
+    movw $0x10, %ax
+    movw %ax, %ds
+    movw %ax, %es
+    movw %ax, %ss
+
+    movw $0x28, %ax
+    ltr %ax
+    ret
+
+.size gdt_load, .-gdt_load
+.section .note.GNU-stack,"",@progbits
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\isr.o =====
+
+ELF          >                    X          @     @ 
+ 
+ j h     Z  j j  Q  j j H  j j ?  j j 6  j j -  j j $  j j   j j    j 
+  j j	   j
+     j
+     j     j
+     j     j j     j j     j     j j    j j    j j    j    j j    j j    j j    j j    j j zj j tj j nj jj fj j `j j  Zj j! Tj j" Nj j# Hj j$ Bj j% <j j& 6j j' 0j j( *j j) $j j* j j+ j j, j j- j j. j j/  PSQRVWUAPAQARASATAUAVAW H  H  H   H  H D$     H d$H |$x    tH  H   H  H D$     H d$A_A^A]A\A[AZAYAX]_^ZY[XH  H                                                                                                                                                                                                                                                                                                                                                                                                                                                        f                                                        "                     -      '               8      0               C      9               N      B               Y      K               d      T               o      [               z      d                      k                      r                      y                                                                                                                                                                                                       
+                                          "                     .                     :                     F                     R                     ^                     j                     v                                                                                                                              $                    *                    0                    6                    <                    B                   H                   N                   T              *     Z              6     `              B                    U                    d                     w                      isr_common isr_stub_0 isr_stub_1 isr_stub_2 isr_stub_3 isr_stub_4 isr_stub_5 isr_stub_6 isr_stub_7 isr_stub_8 isr_stub_9 isr_stub_10 isr_stub_11 isr_stub_12 isr_stub_13 isr_stub_14 isr_stub_15 isr_stub_16 isr_stub_17 isr_stub_18 isr_stub_19 isr_stub_20 isr_stub_21 isr_stub_22 isr_stub_23 isr_stub_24 isr_stub_25 isr_stub_26 isr_stub_27 isr_stub_28 isr_stub_29 isr_stub_30 isr_stub_31 isr_stub_32 isr_stub_33 isr_stub_34 isr_stub_35 isr_stub_36 isr_stub_37 isr_stub_38 isr_stub_39 isr_stub_40 isr_stub_41 isr_stub_42 isr_stub_43 isr_stub_44 isr_stub_45 isr_stub_46 isr_stub_47 ring3_syscall_stub isr_stub_table interrupt_dispatch task_interrupt_exit                5                     6                                                                                     '                     0       (             9       0             B       8             K       @             T       H             [       P             d       X             k       `             r       h             y       p                     x                                                                                                                                                                                                                                                                                                                                                                                                                                                                                (            $      0            *      8            0      @            6      H            <      P            B      X            H      `            N      h            T      p            Z      x            `       .symtab .strtab .shstrtab .rela.text .data .bss .rela.rodata .note.GNU-stack                                                                                         @                                           @               X
+      0                           &                                                          ,                                                          6                                                          1      @                
+                                 >                                                                                         (      	   3                 	                                                                                       N                              
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\isr.S =====
+
+/*
+ * src/arch/x86_64/isr.S
+ *
+ * Stubs for vectors 0-47 (CPU exceptions + remapped PIC IRQs), plus the
+ * dedicated Ring 3 syscall vector 128. Every stub reaches isr_common, which
+ * builds one uniform frame and calls interrupt_dispatch(frame) in idt.c.
+ *
+ * Frame layout (lowest address first) must match interrupt_frame_t in idt.c:
+ *   r15 r14 r13 r12 r11 r10 r9 r8 rbp rdi rsi rdx rcx rbx rax
+ *   vector error_code
+ *   rip cs rflags rsp ss          <- pushed by the CPU
+ *
+ * An interrupt can arrive with arbitrary RSP alignment. isr_common aligns a
+ * temporary stack for its C call and restores the original frame pointer.
+ */
+
+.code64
+
+.extern interrupt_dispatch
+.extern task_interrupt_exit
+
+.section .text
+.global ring3_syscall_stub
+ring3_syscall_stub:
+    pushq $0
+    pushq $128
+    jmp isr_common
+
+/* Vectors where the CPU does NOT push an error code: push a dummy 0. */
+.macro ISR_NOERR num
+    .section .text
+isr_stub_\num:
+    pushq $0
+    pushq $\num
+    jmp isr_common
+    .section .rodata
+    .quad isr_stub_\num
+.endm
+
+/* Vectors where the CPU pushes an error code itself. */
+.macro ISR_ERR num
+    .section .text
+isr_stub_\num:
+    pushq $\num
+    jmp isr_common
+    .section .rodata
+    .quad isr_stub_\num
+.endm
+
+/* Table of stub addresses, read by idt_init(). Nothing else may be emitted
+ * into .rodata between here and the last ISR_* line. */
+.section .rodata
+.balign 8
+.global isr_stub_table
+isr_stub_table:
+
+/* CPU exceptions */
+ISR_NOERR 0
+ISR_NOERR 1
+ISR_NOERR 2
+ISR_NOERR 3
+ISR_NOERR 4
+ISR_NOERR 5
+ISR_NOERR 6
+ISR_NOERR 7
+ISR_ERR   8
+ISR_NOERR 9
+ISR_ERR   10
+ISR_ERR   11
+ISR_ERR   12
+ISR_ERR   13
+ISR_ERR   14
+ISR_NOERR 15
+ISR_NOERR 16
+ISR_ERR   17
+ISR_NOERR 18
+ISR_NOERR 19
+ISR_NOERR 20
+ISR_ERR   21
+ISR_NOERR 22
+ISR_NOERR 23
+ISR_NOERR 24
+ISR_NOERR 25
+ISR_NOERR 26
+ISR_NOERR 27
+ISR_NOERR 28
+ISR_ERR   29
+ISR_ERR   30
+ISR_NOERR 31
+
+/* PIC IRQs 0-15 -> vectors 32-47 */
+ISR_NOERR 32
+ISR_NOERR 33
+ISR_NOERR 34
+ISR_NOERR 35
+ISR_NOERR 36
+ISR_NOERR 37
+ISR_NOERR 38
+ISR_NOERR 39
+ISR_NOERR 40
+ISR_NOERR 41
+ISR_NOERR 42
+ISR_NOERR 43
+ISR_NOERR 44
+ISR_NOERR 45
+ISR_NOERR 46
+ISR_NOERR 47
+
+.section .text
+isr_common:
+    pushq %rax
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %rsi
+    pushq %rdi
+    pushq %rbp
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    pushq %r12
+    pushq %r13
+    pushq %r14
+    pushq %r15
+
+    cld                         /* SysV ABI: DF must be clear when calling C */
+    movq %rsp, %rdi             /* arg0 = pointer to frame */
+    movq %rsp, %rax             /* preserve frame pointer across the C call */
+    andq $-16, %rsp              /* SysV ABI: align RSP before CALL */
+    subq $16, %rsp
+    movq %rax, 8(%rsp)
+    call interrupt_dispatch
+    movq 8(%rsp), %rsp          /* restore the interrupt frame stack */
+
+    cmpq $128, 120(%rsp)        /* syscalls can return to user mode */
+    je .Lisr_skip_task_exit
+
+    /* Schedule only after dispatch has completed and the PIC EOI was sent. */
+    movq %rsp, %rax
+    andq $-16, %rsp
+    subq $16, %rsp
+    movq %rax, 8(%rsp)
+    call task_interrupt_exit
+    movq 8(%rsp), %rsp          /* restore this task's interrupt frame */
+
+.Lisr_skip_task_exit:
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+
+    addq $16, %rsp              /* drop vector + error code */
+    iretq
+
+.section .note.GNU-stack,"",@progbits
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\ring3.o =====
+
+ELF          >                               @     @ 	  jVjj#WHϸ    U   ̀ 
+   ̀1 ̀
+1 H        ̀
+                                          
+       
+                     +                    G                    a     )                ring3_enter ring3_user_test_program_start ring3_user_test_program_end ring3_fault_program_start ring3_fault_program_end  .symtab .strtab .shstrtab .text .data .bss .rodata .note.GNU-stack                                                                                         @       
+                              !                     J                                      '                     J                                      ,                     J       )                              4                      s                                                            x                                    	                            y                                                           D                              
+
+===== C:\Users\gabri\OneDrive\Documents\rockos\src\arch\x86_64\ring3.S =====
+
+.code64
+
+.section .text
+.global ring3_enter
+.type ring3_enter, @function
+ring3_enter:
+    pushq $0x23
+    pushq %rsi
+    pushq $0x02
+    pushq $0x1B
+    pushq %rdi
+    iretq
+.size ring3_enter, .-ring3_enter
+
+.section .rodata
+.global ring3_user_test_program_start
+.global ring3_user_test_program_end
+ring3_user_test_program_start:
+    /* putchar('U'), putchar('\n'), exit(0) */
+    .byte 0xB8, 0x01, 0x00, 0x00, 0x00
+    .byte 0xBF, 0x55, 0x00, 0x00, 0x00
+    .byte 0xCD, 0x80
+    .byte 0xBF, 0x0A, 0x00, 0x00, 0x00
+    .byte 0xCD, 0x80
+    .byte 0x31, 0xC0
+    .byte 0xCD, 0x80
+    .byte 0x0F, 0x0B
+ring3_user_test_program_end:
+
+.global ring3_fault_program_start
+.global ring3_fault_program_end
+ring3_fault_program_start:
+    .byte 0x31, 0xC0
+    .byte 0x48, 0xA1
+    .quad 0x00100000
+    .byte 0xCD, 0x80
+    .byte 0x0F, 0x0B
+ring3_fault_program_end:
+
+.section .note.GNU-stack,"",@progbits

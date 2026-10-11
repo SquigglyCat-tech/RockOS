@@ -2,6 +2,7 @@
 
 #include "io.h"
 #include "pci.h"
+#include "serial.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -276,7 +277,10 @@ static block_result_t ata_identify(ata_drive_t* drive, uint8_t channel,
         identify_words[word] = inw(ch->data);
     }
 
-    if (!(identify_words[49] & (1u << 9))) return BLOCK_RESULT_UNSUPPORTED;
+    /* Some emulators (v86) do not set the IDENTIFY "LBA supported" bit
+     * (word 49 bit 9) even though they report a valid LBA28 sector count in
+     * words 60-61, so the sector count is the real test. CHS-only drives
+     * report 0 there and are still rejected below. */
     uint64_t sectors = (uint64_t)identify_words[60] |
         ((uint64_t)identify_words[61] << 16);
     if (sectors == 0 || sectors > ATA_LBA28_SECTOR_LIMIT) {
@@ -321,6 +325,15 @@ block_result_t storage_init(void) {
         uint8_t slave = probe_order[i][1];
         size_t slot = (size_t)channel * 2 + slave;
         block_result_t r = ata_identify(&ata_drives[slot], channel, slave);
+        serial_write_string("[ata] probe ");
+        serial_write_string(ata_drive_names[slot & 3u]);
+        if (r == BLOCK_RESULT_OK) {
+            serial_write_string(": disk found\n");
+        } else {
+            serial_write_string(": none (result code ");
+            serial_write_hex((uint64_t)r);
+            serial_write_string(")\n");
+        }
         if (r == BLOCK_RESULT_OK) {
             ata_device_count++;
             if (initialization_result != BLOCK_RESULT_OK) {

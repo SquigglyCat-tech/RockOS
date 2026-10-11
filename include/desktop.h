@@ -6,7 +6,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* RockOS V.2 desktop: icons, taskbar, start menu, draggable windows. */
+/* RockOS V.2 desktop: icons, taskbar, start menu, draggable/maximizable
+ * windows, help overlay, terminal history, full file-list navigation. */
 
 void desktop_start(void);
 void desktop_stop(void);

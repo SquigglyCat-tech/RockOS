@@ -1,0 +1,5 @@
+x86_64-elf-gcc -m32 -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=1 -DROCKOS_ARCH_32=1 -c src/drivers/display.c -o src/drivers/display.32.o
+src/drivers/display.c: Assembler messages:
+src/drivers/display.c:292: Error: `movsq' is only supported in 64-bit mode
+src/drivers/display.c:292: Error: `movsq' is only supported in 64-bit mode
+make: *** [Makefile:108: src/drivers/display.32.o] Error 1

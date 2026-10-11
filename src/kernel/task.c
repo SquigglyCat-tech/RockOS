@@ -160,10 +160,19 @@ static void initialize_task_slot(task_t* task, uint32_t slot) {
     initial_stack[1] = 0;
     initial_stack[2] = 0;
     initial_stack[3] = 0;
+#ifdef ROCKOS_ARCH_32
+    /* i386 context_switch pops edi, esi, ebp, ebx then returns. */
+    initial_stack[4] = (uintptr_t)task_bootstrap;
+    initial_stack[5] = 0;
+    initial_stack[6] = 0;
+    initial_stack[7] = 0;
+#else
+    /* x86-64 context_switch pops six callee-saved registers then returns. */
     initial_stack[4] = 0;
     initial_stack[5] = 0;
     initial_stack[6] = (uintptr_t)task_bootstrap;
     initial_stack[7] = 0;
+#endif
     task->kernel_stack_pointer = (uintptr_t)initial_stack;
     task->run_queue_next = NULL;
     task->on_run_queue = false;

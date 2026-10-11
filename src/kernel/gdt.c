@@ -79,7 +79,7 @@ static void set_segment_descriptor(int index, uint32_t base, uint32_t limit,
         ((uint64_t)(base & 0xFFFFFFULL) << 16) |
         ((uint64_t)access << 40) |
         ((uint64_t)(limit & 0xF0000ULL) << 32) |
-        ((uint64_t)(granularity & 0xF0ULL) << 40) |
+        ((uint64_t)(granularity & 0xF0ULL) << 48) |
         ((uint64_t)((base >> 24) & 0xFFULL) << 56);
 }
 

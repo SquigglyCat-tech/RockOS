@@ -1,0 +1,44 @@
+x86_64-elf-gcc -m32 -Iinclude -c src/arch/i386/boot32.S -o src/arch/i386/boot32.o
+x86_64-elf-gcc -m32 -Iinclude -c src/arch/i386/gdt32_load.S -o src/arch/i386/gdt32_load.o
+x86_64-elf-gcc -m32 -Iinclude -c src/arch/i386/isr32.S -o src/arch/i386/isr32.o
+x86_64-elf-gcc -m32 -Iinclude -c src/arch/i386/ring3_32.S -o src/arch/i386/ring3_32.o
+x86_64-elf-gcc -m32 -Iinclude -c src/arch/i386/context32_switch.S -o src/arch/i386/context32_switch.o
+x86_64-elf-gcc -m32 -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=1 -DROCKOS_ARCH_32=1 -c src/kernel/kernel.c -o src/kernel/kernel.32.o
+src/kernel/kernel.c: In function 'pmm_self_test':
+src/kernel/kernel.c:61:24: warning: cast to pointer from integer of different size [-Wint-to-pointer-cast]
+   61 |         run_words[i] = (volatile uint64_t*)((uintptr_t)run + i * PMM_PAGE_SIZE);
+      |                        ^
+x86_64-elf-gcc -m32 -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=1 -DROCKOS_ARCH_32=1 -c src/kernel/desktop.c -o src/kernel/desktop.32.o
+x86_64-elf-gcc -m32 -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=1 -DROCKOS_ARCH_32=1 -c src/kernel/acpi.c -o src/kernel/acpi.32.o
+In function 'read_u16',
+    inlined from 'find_rsdp' at src/kernel/acpi.c:95:29,
+    inlined from 'find_fadt' at src/kernel/acpi.c:121:27,
+    inlined from 'get_power_info' at src/kernel/acpi.c:241:37,
+    inlined from 'acpi_poweroff' at src/kernel/acpi.c:274:10:
+src/kernel/acpi.c:36:27: warning: array subscript 0 is outside array bounds of 'const uint8_t[0]' {aka 'const unsigned char[]'} [-Warray-bounds=]
+   36 |     return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+      |                      ~~~~~^~~
+In function 'acpi_poweroff':
+cc1.exe: note: source object is likely at address zero
+In function 'read_u16',
+    inlined from 'find_rsdp' at src/kernel/acpi.c:95:29,
+    inlined from 'find_fadt' at src/kernel/acpi.c:121:27,
+    inlined from 'get_power_info' at src/kernel/acpi.c:241:37,
+    inlined from 'acpi_poweroff' at src/kernel/acpi.c:274:10:
+src/kernel/acpi.c:36:49: warning: array subscript 1 is outside array bounds of 'const uint8_t[0]' {aka 'const unsigned char[]'} [-Warray-bounds=]
+   36 |     return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
+      |                                            ~~~~~^~~
+In function 'acpi_poweroff':
+cc1.exe: note: source object is likely at address zero
+x86_64-elf-gcc -m32 -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=1 -DROCKOS_ARCH_32=1 -c src/kernel/pic.c -o src/kernel/pic.32.o
+x86_64-elf-gcc -m32 -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=1 -DROCKOS_ARCH_32=1 -c src/kernel/idt.c -o src/kernel/idt.32.o
+src/kernel/idt.c: In function 'idt_init':
+src/kernel/idt.c:358:17: warning: cast from pointer to integer of different size [-Wpointer-to-int-cast]
+  358 |     idtp.base = (uint64_t)&idt;
+      |                 ^
+x86_64-elf-gcc -m32 -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=1 -DROCKOS_ARCH_32=1 -c src/kernel/gdt.c -o src/kernel/gdt.32.o
+x86_64-elf-gcc -m32 -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=1 -DROCKOS_ARCH_32=1 -c src/drivers/display.c -o src/drivers/display.32.o
+src/drivers/display.c: Assembler messages:
+src/drivers/display.c:292: Error: `movsq' is only supported in 64-bit mode
+src/drivers/display.c:292: Error: `movsq' is only supported in 64-bit mode
+make: *** [Makefile:108: src/drivers/display.32.o] Error 1

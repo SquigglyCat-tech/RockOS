@@ -55,9 +55,12 @@ Audio uses an emulated Intel AC'97 device. If playback is unavailable, check
 that the virtual machine has audio output enabled and use the RockOS `audio`
 shell command to inspect AC'97 initialization and DMA playback status.
 
-Press `Ctrl+Alt+D` to open or close the desktop. Its start menu and desktop
-icons provide About and keyboard-shortcut windows; press `Esc` to close a
-window or return to the shell.
+Press `Ctrl+Alt+D` to open or close the desktop (`Ctrl+Alt+Q` also exits).
+Its start menu and desktop icons open File Manager, Terminal, System Info,
+and About. Title buttons minimize / maximize / close; `Tab` cycles windows,
+`Esc` closes menu/window/desktop, `F1` shows desktop help, and `Ctrl+Alt+M`
+minimizes the focused window. Terminal keeps Up/Down command history; File
+Manager supports Up/Down/PgUp/PgDn/Home/End, Enter to open, Backspace for up.
 
 Build the ISO without launching QEMU:
 

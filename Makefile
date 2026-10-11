@@ -1,5 +1,8 @@
 TARGET64 = x86_64-elf
-TARGET32 = i686-elf
+# 32-bit uses the same x86_64-elf toolchain with -m32 (there is no 32-bit
+# libgcc, so src/arch/i386/divdi3.c supplies the 64-bit division helpers).
+# If you ever install a real i686-elf toolchain: make TARGET32=i686-elf kernel32
+TARGET32 ?= $(TARGET64)
 AUDIO_BOOT_TEST_TONE ?= 1
 PYTHON ?= $(if $(wildcard /c/Python314/python.exe),/c/Python314/python.exe,python)
 LIMINE_TOOL ?= $(if $(wildcard /c/opt/limine/limine-binary/limine-tool-windows-x86/limine.exe),/c/opt/limine/limine-binary/limine-tool-windows-x86/limine.exe,limine)
@@ -9,12 +12,12 @@ CC64  = $(TARGET64)-gcc
 LD64  = $(TARGET64)-ld
 ASM64 = $(TARGET64)-gcc
 
-CC32  = $(TARGET32)-gcc
+CC32  = $(TARGET32)-gcc -m32
 LD32  = $(TARGET32)-ld
-ASM32 = $(TARGET32)-gcc
+ASM32 = $(TARGET32)-gcc -m32
 
 CFLAGS64 = -O2 -ffreestanding -mcmodel=large -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_64=1 -c
-CFLAGS32 = -O2 -ffreestanding -march=i686 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_32=1 -c
+CFLAGS32 = -O2 -ffreestanding -march=i586 -mno-mmx -mno-sse -mno-sse2 -mno-80387 -fno-builtin -fno-stack-protector -fno-pic -fno-pie -Wall -Wextra -Iinclude -DAUDIO_BOOT_TEST_TONE=$(AUDIO_BOOT_TEST_TONE) -DROCKOS_ARCH_32=1 -c
 ASMFLAGS = -Iinclude -c
 LDFLAGS64 = -m elf_x86_64 -T linker.ld
 LDFLAGS32 = -m elf_i386 -T linker32.ld
@@ -72,12 +75,17 @@ OBJS64 = $(ASM64_SOURCES:.S=.o) $(C_SOURCES:.c=.o)
 # own directory so plain .o is safe there.
 OBJS32_ARCH = $(filter src/arch/i386/%.S,$(ASM32_SOURCES))
 OBJS32_ARCH_O = $(OBJS32_ARCH:.S=.o)
-OBJS32 = $(OBJS32_ARCH_O) $(C_SOURCES:.c=.32.o) src/drivers/error_sound.32.o
+# 32-bit swaps the x86-64 paging for the 2-level i386 version and adds the
+# 64-bit division helpers.
+C_SOURCES32 = $(filter-out src/kernel/paging.c,$(C_SOURCES)) \
+              src/arch/i386/paging32.c \
+              src/arch/i386/divdi3.c
+OBJS32 = $(OBJS32_ARCH_O) $(C_SOURCES32:.c=.32.o) src/drivers/error_sound.32.o
 
 KERNEL64_BIN = rockos64.bin
 KERNEL32_BIN = rockos32.bin
 KERNEL_BIN = rockos.bin
-ISO_IMAGE = rockos.iso
+ISO_IMAGE = rockosdualbootv.1.iso
 DATA_DISK = rockos-data.img
 INSTALL_DISK ?= rockos-install-target.img
 INSTALL_IMAGE = build/rockos-install.img
@@ -115,6 +123,7 @@ $(UI_ASSETS): $(UI_FONT) $(UI_FONT_LICENSE) assets/rockos-logo-outlined.png scri
 		-OutputPath $(UI_ASSETS)
 
 src/drivers/display.o: $(UI_ASSETS)
+src/drivers/display.32.o: $(UI_ASSETS)
 
 $(ISO_BOOT_DIR)/selawik-OFL.txt: $(UI_FONT_LICENSE)
 	mkdir -p $(ISO_BOOT_DIR)
@@ -122,6 +131,11 @@ $(ISO_BOOT_DIR)/selawik-OFL.txt: $(UI_FONT_LICENSE)
 
 $(KERNEL64_BIN): $(OBJS64) linker.ld
 	$(LD64) $(LDFLAGS64) $(OBJS64) -o $(KERNEL64_BIN)
+
+# 32-bit kernel only (no ISO yet): make kernel32
+$(KERNEL32_BIN): $(OBJS32) linker32.ld ; $(LD32) $(LDFLAGS32) $(OBJS32) -o $@
+
+kernel32: $(KERNEL32_BIN)
 
 $(KERNEL_BIN): $(KERNEL64_BIN)
 	cp $< $@
@@ -151,7 +165,10 @@ $(INSTALL_IMAGE): $(KERNEL_BIN) $(ISO_BOOT_DIR)/limine-bios.sys $(ISO_DIR)/EFI/B
 $(INSTALL_MODULE): $(INSTALL_IMAGE)
 	cp $< $@
 
-$(ISO_IMAGE): $(KERNEL_BIN) $(ISO_BOOT_DIR)/limine-bios.sys $(ISO_BOOT_DIR)/limine-bios-cd.bin $(ISO_BOOT_DIR)/limine-uefi-cd.bin $(ISO_BOOT_DIR)/limine.conf $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_MODULE) $(ISO_BOOT_DIR)/selawik-OFL.txt
+# The ISO carries both kernels; Limine's menu picks one at boot.
+$(ISO_BOOT_DIR)/rockos32.bin: $(KERNEL32_BIN) ; mkdir -p $(ISO_BOOT_DIR) && cp $< $@
+
+$(ISO_IMAGE): $(KERNEL_BIN) $(ISO_BOOT_DIR)/rockos32.bin $(ISO_BOOT_DIR)/limine-bios.sys $(ISO_BOOT_DIR)/limine-bios-cd.bin $(ISO_BOOT_DIR)/limine-uefi-cd.bin $(ISO_BOOT_DIR)/limine.conf $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_MODULE) $(ISO_BOOT_DIR)/selawik-OFL.txt
 	mkdir -p $(ISO_BOOT_DIR)
 	cp $(KERNEL_BIN) $(ISO_BOOT_DIR)/rockos.bin
 	xorriso -as mkisofs -R -r -J \
@@ -192,4 +209,4 @@ run-installed: $(INSTALL_DISK) $(DATA_DISK)
 clean:
 	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS)
 
-.PHONY: all run run-installed clean
+.PHONY: all run run-installed clean kernel32

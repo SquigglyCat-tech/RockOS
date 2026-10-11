@@ -90,6 +90,12 @@ static uint32_t framebuffer_dirty_left;
 static uint32_t framebuffer_dirty_top;
 static uint32_t framebuffer_dirty_right;
 static uint32_t framebuffer_dirty_bottom;
+/* Per-scanline dirty spans: display_present() copies only these pixels
+ * instead of the bounding box of everything that changed. A span is empty
+ * when left >= right. */
+#define FRAMEBUFFER_MAX_ROWS 4096U
+static uint16_t framebuffer_dirty_row_left[FRAMEBUFFER_MAX_ROWS];
+static uint16_t framebuffer_dirty_row_right[FRAMEBUFFER_MAX_ROWS];
 static uint64_t framebuffer_last_present_ticks;
 static uint64_t framebuffer_last_present_cycles;
 static uint32_t mouse_pixel_x;
@@ -136,8 +142,26 @@ static uint8_t coverage_at(const uint8_t* bitmap, size_t pixel_index) {
 
 static void blend_foreground_over_pixel(uint32_t x, uint32_t y,
     uint8_t foreground, uint8_t coverage);
+static void copy_to_framebuffer(volatile uint8_t* destination,
+    const uint8_t* source, size_t byte_count);
+
+static void mark_row_span(uint32_t y, uint32_t left, uint32_t right) {
+    if (y >= FRAMEBUFFER_MAX_ROWS) return;
+    if (framebuffer_dirty_row_left[y] >= framebuffer_dirty_row_right[y]) {
+        framebuffer_dirty_row_left[y] = (uint16_t)left;
+        framebuffer_dirty_row_right[y] = (uint16_t)right;
+        return;
+    }
+    if (left < framebuffer_dirty_row_left[y]) {
+        framebuffer_dirty_row_left[y] = (uint16_t)left;
+    }
+    if (right > framebuffer_dirty_row_right[y]) {
+        framebuffer_dirty_row_right[y] = (uint16_t)right;
+    }
+}
 
 static void mark_framebuffer_dirty(uint32_t x, uint32_t y) {
+    mark_row_span(y, x, x + 1);
     if (!framebuffer_dirty) {
         framebuffer_dirty_left = x;
         framebuffer_dirty_top = y;
@@ -155,6 +179,9 @@ static void mark_framebuffer_dirty(uint32_t x, uint32_t y) {
 static void mark_framebuffer_dirty_rect(uint32_t x, uint32_t y,
     uint32_t width, uint32_t height) {
     if (width == 0 || height == 0) return;
+    for (uint32_t row = y; row < y + height; row++) {
+        mark_row_span(row, x, x + width);
+    }
     if (!framebuffer_dirty) {
         framebuffer_dirty_left = x;
         framebuffer_dirty_top = y;
@@ -207,6 +234,12 @@ static void put_pixel_overlay(uint32_t x, uint32_t y, uint32_t color) {
     volatile uint8_t* pixel = framebuffer +
         (size_t)y * framebuffer_pitch +
         (size_t)x * framebuffer_bytes_per_pixel;
+    if (framebuffer_bytes_per_pixel == 4) {
+        /* One 32-bit store instead of four byte stores: 4x fewer slow
+         * framebuffer writes. 4-byte pixels are always 4-byte aligned. */
+        *(volatile uint32_t*)pixel = color;
+        return;
+    }
     for (uint8_t byte = 0; byte < framebuffer_bytes_per_pixel; byte++) {
         pixel[byte] = (uint8_t)(color >> (byte * 8));
     }
@@ -270,16 +303,20 @@ static void erase_pixel_mouse_cursor(void) {
             (size_t)visible_width * framebuffer_bytes_per_pixel;
         size_t offset = (size_t)y * framebuffer_pitch +
             (size_t)mouse_pixel_x * framebuffer_bytes_per_pixel;
-        volatile uint8_t* pixel = framebuffer + offset;
-        const uint8_t* shadow_pixel = framebuffer_shadow + offset;
-        for (size_t byte = 0; byte < byte_count; byte++) {
-            pixel[byte] = shadow_pixel[byte];
-        }
+        copy_to_framebuffer(framebuffer + offset, framebuffer_shadow + offset,
+            byte_count);
     }
     mouse_pixel_visible = false;
 }
 
+/* Draw primitives only write to the shadow buffer and mark it dirty;
+ * display_present() re-draws the cursor after copying. Re-drawing it after
+ * every single primitive (text, rect, triangle...) cost thousands of slow
+ * framebuffer writes per call, so this is now intentionally a no-op. */
 static void redraw_pixel_mouse_cursor(void) {
+}
+
+static void redraw_pixel_mouse_cursor_now(void) {
     if (!framebuffer_active || !framebuffer_shadow) return;
     erase_pixel_mouse_cursor();
     draw_pixel_mouse_cursor();
@@ -287,6 +324,17 @@ static void redraw_pixel_mouse_cursor(void) {
 
 static void copy_to_framebuffer(volatile uint8_t* destination,
     const uint8_t* source, size_t byte_count) {
+#ifdef ROCKOS_ARCH_32
+    /* i386 has no movsq: copy 4 bytes at a time. */
+    size_t word_count = byte_count / sizeof(uint32_t);
+    if (word_count != 0) {
+        asm volatile("rep movsl"
+            : "+D"(destination), "+S"(source), "+c"(word_count)
+            :
+            : "memory");
+    }
+    size_t remaining_bytes = byte_count % sizeof(uint32_t);
+#else
     size_t word_count = byte_count / sizeof(uint64_t);
     if (word_count != 0) {
         asm volatile("rep movsq"
@@ -295,6 +343,7 @@ static void copy_to_framebuffer(volatile uint8_t* destination,
             : "memory");
     }
     size_t remaining_bytes = byte_count % sizeof(uint64_t);
+#endif
     while (remaining_bytes > 0) {
         *destination++ = *source++;
         remaining_bytes--;
@@ -310,24 +359,24 @@ void display_present(void) {
 
     uint64_t start_ticks = timer_get_ticks();
     uint64_t start_cycles = display_read_timestamp_counter();
-    if (framebuffer_dirty_left == 0 && framebuffer_dirty_top == 0 &&
-        framebuffer_dirty_right == framebuffer_width &&
-        framebuffer_dirty_bottom == framebuffer_height) {
-        size_t framebuffer_bytes =
-            (size_t)framebuffer_pitch * framebuffer_height;
-        copy_to_framebuffer(framebuffer, framebuffer_shadow,
-            framebuffer_bytes);
-    } else {
-        size_t row_bytes = (size_t)(framebuffer_dirty_right -
-            framebuffer_dirty_left) * framebuffer_bytes_per_pixel;
-        size_t column_offset =
-            (size_t)framebuffer_dirty_left * framebuffer_bytes_per_pixel;
-        for (uint32_t y = framebuffer_dirty_top;
-             y < framebuffer_dirty_bottom; y++) {
-            size_t offset = (size_t)y * framebuffer_pitch + column_offset;
-            copy_to_framebuffer(framebuffer + offset,
-                framebuffer_shadow + offset, row_bytes);
-        }
+    /* Copy only the pixels that actually changed, one span per scanline.
+     * (The old code copied the single bounding box of everything dirty, so
+     * two small changes far apart repainted most of the screen.) */
+    uint32_t last_row = framebuffer_dirty_bottom;
+    if (last_row > framebuffer_height) last_row = framebuffer_height;
+    if (last_row > FRAMEBUFFER_MAX_ROWS) last_row = FRAMEBUFFER_MAX_ROWS;
+    for (uint32_t y = framebuffer_dirty_top; y < last_row; y++) {
+        uint32_t left = framebuffer_dirty_row_left[y];
+        uint32_t right = framebuffer_dirty_row_right[y];
+        if (left >= right) continue;
+        if (right > framebuffer_width) right = framebuffer_width;
+        size_t offset = (size_t)y * framebuffer_pitch +
+            (size_t)left * framebuffer_bytes_per_pixel;
+        copy_to_framebuffer(framebuffer + offset,
+            framebuffer_shadow + offset,
+            (size_t)(right - left) * framebuffer_bytes_per_pixel);
+        framebuffer_dirty_row_left[y] = 0;
+        framebuffer_dirty_row_right[y] = 0;
     }
     framebuffer_last_present_ticks = timer_get_ticks() - start_ticks;
     framebuffer_last_present_cycles =
@@ -500,6 +549,30 @@ static void redraw_all(void) {
     }
 }
 
+/* Scroll the text grid by moving pixels inside the shadow buffer instead of
+ * re-rendering all 2000 cells (576,000 pixels) for every new line. */
+static void scroll_framebuffer_up(void) {
+    uint32_t grid_width = VGA_WIDTH * CELL_WIDTH;
+    uint32_t grid_height = VGA_HEIGHT * CELL_HEIGHT;
+    size_t row_bytes = (size_t)grid_width * framebuffer_bytes_per_pixel;
+    size_t column_offset =
+        (size_t)framebuffer_origin_x * framebuffer_bytes_per_pixel;
+
+    for (uint32_t row = 0; row + CELL_HEIGHT < grid_height; row++) {
+        size_t destination = (size_t)(framebuffer_origin_y + row) *
+            framebuffer_pitch + column_offset;
+        size_t source = (size_t)(framebuffer_origin_y + row + CELL_HEIGHT) *
+            framebuffer_pitch + column_offset;
+        copy_to_framebuffer((volatile uint8_t*)(framebuffer_shadow + destination),
+            framebuffer_shadow + source, row_bytes);
+    }
+    fill_rect_untracked(framebuffer_origin_x,
+        framebuffer_origin_y + grid_height - CELL_HEIGHT, grid_width,
+        CELL_HEIGHT, framebuffer_color(current_color >> 4));
+    mark_framebuffer_dirty_rect(framebuffer_origin_x, framebuffer_origin_y,
+        grid_width, grid_height);
+}
+
 static void scroll(void) {
     if (cursor_y < VGA_HEIGHT) return;
     for (uint8_t y = 0; y < VGA_HEIGHT - 1; y++) {
@@ -513,7 +586,11 @@ static void scroll(void) {
         text_buffer[(size_t)(VGA_HEIGHT - 1) * VGA_WIDTH + x] = blank;
     }
     cursor_y = VGA_HEIGHT - 1;
-    redraw_all();
+    if (framebuffer_active && framebuffer_shadow) {
+        scroll_framebuffer_up();
+    } else {
+        redraw_all();
+    }
 }
 
 void display_set_color(uint8_t foreground, uint8_t background) {
@@ -585,6 +662,10 @@ bool display_init_framebuffer(uintptr_t boot_info_address) {
     if (info->framebuffer_width < VGA_WIDTH * CELL_WIDTH ||
         info->framebuffer_height < VGA_HEIGHT * CELL_HEIGHT) {
         framebuffer_status = "resolution is below 960x600";
+        return false;
+    }
+    if (info->framebuffer_height > FRAMEBUFFER_MAX_ROWS) {
+        framebuffer_status = "resolution is taller than 4096 rows";
         return false;
     }
 
@@ -1088,7 +1169,7 @@ void display_set_mouse_busy(bool busy) {
     if (mouse_pointer_busy == busy) return;
     mouse_pointer_busy = busy;
     if (framebuffer_active && framebuffer_shadow) {
-        redraw_pixel_mouse_cursor();
+        redraw_pixel_mouse_cursor_now();
     }
 }
 

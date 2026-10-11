@@ -107,11 +107,6 @@ ISR32_NOERR 45
 ISR32_NOERR 46
 ISR32_NOERR 47
 
-.section .bss
-.align 4
-isr32_saved_frame:
-    .skip 4
-
 .section .text
 isr32_common:
     pusha
@@ -128,11 +123,12 @@ isr32_common:
     cmpl $128, 32(%esp)
     je .Lisr32_skip_task_exit
 
-    /* task_interrupt_exit() may switch to another task's stack, so the
-     * frame pointer cannot live on the stack across the call. */
-    movl %esp, isr32_saved_frame
+    /* task_interrupt_exit() may context-switch to another task. Every task
+     * has its own kernel stack and context_switch restores that task's ESP
+     * exactly, so when this call returns ESP is already this task's frame.
+     * Do NOT stash the frame pointer in a global: another task's interrupt
+     * would overwrite it while we are switched out. */
     call task_interrupt_exit
-    movl isr32_saved_frame, %esp
 
 .Lisr32_skip_task_exit:
     popa

@@ -58,7 +58,7 @@ static bool pmm_self_test(void) {
         !pmm_is_free((uintptr_t)run, 3);
     volatile uint64_t* run_words[3];
     for (uint64_t i = 0; i < 3; i++) {
-        run_words[i] = (volatile uint64_t*)((uintptr_t)run + i * PMM_PAGE_SIZE);
+        run_words[i] = (volatile uint64_t*)(uintptr_t)((uintptr_t)run + i * PMM_PAGE_SIZE);
         *run_words[i] = 0x5041474500000000ULL | i;
         contents_ok = contents_ok && *run_words[i] == (0x5041474500000000ULL | i);
     }
@@ -74,6 +74,11 @@ static bool pmm_self_test(void) {
         before.free_bytes == after.free_bytes && before.used_bytes == after.used_bytes;
 }
 
+/* The two worker tasks exist to prove the scheduler can preempt. By default
+ * they do a short burst of work and then sleep, so they no longer starve the
+ * UI. Build with -DROCKOS_SCHEDULER_STRESS=1 to get the original behavior
+ * (infinite busy loops that burn a whole time slice each). */
+#ifdef ROCKOS_SCHEDULER_STRESS
 static void task_a_entry(void) {
     uint64_t work = 0;
     for (;;) {
@@ -89,6 +94,25 @@ static void task_b_entry(void) {
         if ((work & 0xFFFF) == 0) task_b_progress++;
     }
 }
+#else
+static void task_a_entry(void) {
+    volatile uint64_t work = 0;
+    for (;;) {
+        for (uint32_t spin = 0; spin < 0x10000U; spin++) work++;
+        task_a_progress++;
+        task_sleep_ticks(2);
+    }
+}
+
+static void task_b_entry(void) {
+    volatile uint64_t work = 0;
+    for (;;) {
+        for (uint32_t spin = 0; spin < 0x10000U; spin++) work++;
+        task_b_progress++;
+        task_sleep_ticks(2);
+    }
+}
+#endif
 
 static void sleep_test_entry(void) {
     for (;;) {
@@ -457,7 +481,12 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     asm volatile ("sti");
 
     uint64_t last_rendered_tick = UINT64_MAX;
-    bool previous_mouse_left = false;
+    /* Latched click counters (see input_mouse_state_t) so no click is lost
+     * when the loop is busy. Kept in sync while the other UI owns the mouse
+     * so switching between shell and desktop never replays an old click. */
+    uint32_t last_press_count = 0;
+    uint32_t last_release_count = 0;
+    uint32_t desktop_press_count = 0;
 
     // 6. Main execution loop
     while (1) {
@@ -466,7 +495,18 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         if (desktop_is_active()) {
             input_mouse_state_t dms;
             mouse_get_state(&dms);
+            if (dms.left_press_count != desktop_press_count) {
+                desktop_press_count = dms.left_press_count;
+                /* Replay a click that started (and maybe ended) between two
+                 * polls, at the position where it actually happened. */
+                desktop_handle_mouse(dms.press_x, dms.press_y, true);
+                if (!dms.left_btn) {
+                    desktop_handle_mouse(dms.x, dms.y, false);
+                }
+            }
             desktop_handle_mouse(dms.x, dms.y, dms.left_btn);
+            last_press_count = dms.left_press_count;
+            last_release_count = dms.left_release_count;
             input_key_event_t dke;
             while (keyboard_get_event(&dke)) {
                 desktop_handle_key(&dke);
@@ -474,7 +514,8 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
             desktop_update(current_ticks);
             render_mouse_cursor();
             display_present();
-            task_yield();
+            /* No task_yield() here: it parked the UI behind every other task
+             * on every pass. hlt wakes on the next mouse/key/timer interrupt. */
             asm volatile ("hlt");
             continue;
         }
@@ -490,26 +531,37 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         render_mouse_cursor();
         input_mouse_state_t mouse_state;
         mouse_get_state(&mouse_state);
-        if (shell_is_fullscreen() &&
-            (mouse_state.left_btn != previous_mouse_left)) {
-            shell_handle_mouse_event((uint32_t)mouse_state.x,
-                (uint32_t)mouse_state.y,
-                mouse_state.left_btn && !previous_mouse_left);
+        if (shell_is_fullscreen()) {
+            if (mouse_state.left_press_count != last_press_count) {
+                last_press_count = mouse_state.left_press_count;
+                shell_handle_mouse_event((uint32_t)mouse_state.press_x,
+                    (uint32_t)mouse_state.press_y, true);
+            }
+            if (mouse_state.left_release_count != last_release_count) {
+                last_release_count = mouse_state.left_release_count;
+                shell_handle_mouse_event((uint32_t)mouse_state.x,
+                    (uint32_t)mouse_state.y, false);
+            }
+        } else {
+            last_press_count = mouse_state.left_press_count;
+            last_release_count = mouse_state.left_release_count;
         }
-        previous_mouse_left = mouse_state.left_btn;
+        desktop_press_count = mouse_state.left_press_count;
 
         input_key_event_t key_evt;
-        if (keyboard_get_event(&key_evt)) {
+        /* Drain every queued key (not just one) so fast typing never lags. */
+        for (uint32_t handled = 0;
+             handled < 32 && keyboard_get_event(&key_evt); handled++) {
             if (desktop_is_launch_hotkey(&key_evt)) {
                 if (!shell_is_fullscreen() && !tour_is_active()) {
                     desktop_start();
+                    break;
                 }
             } else {
                 shell_handle_key_event(&key_evt);
             }
         }
         display_present();
-        task_yield();
         asm volatile ("hlt");
     }
 }

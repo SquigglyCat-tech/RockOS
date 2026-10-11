@@ -16,6 +16,19 @@
 .global _start
 .extern kernel_main
 
+/* Boot diagnostics: write a stage letter to VGA text (top-left row) and to
+ * COM1 so a black screen can be narrowed down (R = entered _start,
+ * P = paging on, K = calling kernel_main). Set BOOT_DIAG to 0 to remove. */
+.set BOOT_DIAG, 1
+.macro DIAG_MARK col, ch
+.if BOOT_DIAG
+    movw $(0x0F00 | \ch), (0xB8000 + \col * 2)
+    movw $0x3F8, %dx
+    movb $\ch, %al
+    outb %al, %dx
+.endif
+.endm
+
 .set ALIGN,    1<<0
 .set MEMINFO,  1<<1
 .set VIDEO,    1<<2
@@ -56,6 +69,7 @@ _start:
     movl %eax, %esi        /* magic -> ESI (callee-saved across setup) */
     movl %ebx, %edi        /* info  -> EDI */
     mov $boot_stack_top, %esp
+    DIAG_MARK 0, 0x52      /* 'R' */
 
     /* Build PD: 256 x 4MiB large pages covering 0..1GiB, P+RW. */
     mov $pd_table, %eax
@@ -87,13 +101,16 @@ _start:
     mov %cr0, %eax
     or $0x80000001, %eax  /* PG + PE */
     mov %eax, %cr0
+    DIAG_MARK 1, 0x50      /* 'P' */
 
     /* Stack is identity-mapped, flat segments from BIOS are fine.
      * GDT/IDT are installed later by kernel_main via gdt32/idt32. */
+    DIAG_MARK 2, 0x4B      /* 'K' */
+    subl $8, %esp         /* keep ESP 16-byte aligned at the call (i386 ABI) */
     pushl %edi            /* info  */
     pushl %esi            /* magic */
     call kernel_main
-    addl $8, %esp
+    addl $16, %esp
 
 .hang:
     cli
