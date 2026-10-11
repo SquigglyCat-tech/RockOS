@@ -124,6 +124,10 @@ static uint64_t shell_profile_page_start_cycles;
 static uint64_t shell_profile_text_cycles;
 static uint64_t shell_profile_logo_cycles;
 static uint32_t shell_profile_text_calls;
+static uint64_t shell_profile_backdrop_cycles;
+static uint64_t shell_profile_panel_cycles;
+static uint64_t shell_profile_button_cycles;
+static uint64_t shell_profile_background_cycles;
 static const char* shell_profile_page_name;
 static uintptr_t shell_installer_image;
 static uint32_t shell_installer_image_size;
@@ -301,6 +305,10 @@ static void shell_profile_page_begin(const char* page_name) {
     shell_profile_text_cycles = 0;
     shell_profile_logo_cycles = 0;
     shell_profile_text_calls = 0;
+    shell_profile_backdrop_cycles = 0;
+    shell_profile_panel_cycles = 0;
+    shell_profile_button_cycles = 0;
+    shell_profile_background_cycles = 0;
     shell_profile_page_start = timer_get_ticks();
     shell_profile_page_start_cycles = shell_profile_read_timestamp_counter();
 }
@@ -334,6 +342,16 @@ static void shell_profile_page_end(void) {
     serial_write_dec(blit_ticks);
     serial_write_string(" framebuffer_copy_ms_est=");
     serial_write_dec(blit_ms);
+    serial_write_string(" backdrop_cycles=");
+    serial_write_dec(shell_profile_backdrop_cycles);
+    serial_write_string(" panel_cycles=");
+    serial_write_dec(shell_profile_panel_cycles);
+    serial_write_string(" button_cycles=");
+    serial_write_dec(shell_profile_button_cycles);
+    serial_write_string(" background_cycles=");
+    serial_write_dec(shell_profile_background_cycles);
+    serial_write_string(" page_cycles=");
+    serial_write_dec(elapsed_cycles);
     serial_write_string("\n");
 }
 
@@ -400,6 +418,8 @@ static void shell_installer_clear_vga_value(uint8_t x, uint8_t y) {
 }
 
 static void shell_ui_draw_backdrop(const char* title, const char* subtitle) {
+    uint64_t profile_start = shell_profile_active
+        ? shell_profile_read_timestamp_counter() : 0;
     uint32_t width;
     uint32_t height;
     if (!shell_get_graphics_size(&width, &height)) return;
@@ -418,10 +438,16 @@ static void shell_ui_draw_backdrop(const char* title, const char* subtitle) {
         shell_ui_text(28, 33, subtitle, COLOR_LIGHT_GRAY, COLOR_DARK_GRAY);
     }
     shell_ui_text(28, height - 33, "ROCKOS", COLOR_LIGHT_GRAY, COLOR_BLACK);
+    if (shell_profile_active) {
+        shell_profile_backdrop_cycles +=
+            shell_profile_read_timestamp_counter() - profile_start;
+    }
 }
 
 static void shell_ui_draw_glass_panel(uint32_t x, uint32_t y,
     uint32_t width, uint32_t height) {
+    uint64_t profile_start = shell_profile_active
+        ? shell_profile_read_timestamp_counter() : 0;
     display_fill_rect_rgb(x + 5, y + 6, width, height, 0, 0, 0);
     display_fill_rect_rgb(x, y, width, height, 108, 111, 116);
     display_fill_rect_rgb(x + 1, y + 1, width - 2, height - 2,
@@ -434,10 +460,16 @@ static void shell_ui_draw_glass_panel(uint32_t x, uint32_t y,
         255, 255, 255, 38);
     display_blend_rect_rgb(x + 2, y + height - 4, width - 4, 2,
         0, 0, 0, 100);
+    if (shell_profile_active) {
+        shell_profile_panel_cycles +=
+            shell_profile_read_timestamp_counter() - profile_start;
+    }
 }
 
 static void shell_ui_draw_glass_button(uint32_t x, uint32_t y,
     uint32_t width, uint32_t height, bool emphasized) {
+    uint64_t profile_start = shell_profile_active
+        ? shell_profile_read_timestamp_counter() : 0;
     display_fill_rect_rgb(x + 2, y + 3, width, height, 0, 0, 0);
     display_fill_rect_rgb(x, y, width, height, 170, 173, 178);
     display_fill_rect_rgb(x + 1, y + 1, width - 2, height - 2,
@@ -446,6 +478,10 @@ static void shell_ui_draw_glass_button(uint32_t x, uint32_t y,
         255, 255, 255, 110);
     display_blend_rect_rgb(x + 1, y + height - 3, width - 2, 2,
         0, 0, 0, 95);
+    if (shell_profile_active) {
+        shell_profile_button_cycles +=
+            shell_profile_read_timestamp_counter() - profile_start;
+    }
 }
 
 static bool shell_ui_rect_contains(const shell_ui_rect_t* rect,
@@ -965,12 +1001,18 @@ static void shell_installer_draw_setup(void) {
     uint32_t width;
     uint32_t height;
     if (shell_get_graphics_size(&width, &height)) {
+        uint64_t background_start = shell_profile_active
+            ? shell_profile_read_timestamp_counter() : 0;
         display_clear();
         for (uint32_t y = 0; y < height; y += 32) {
             uint8_t shade = (uint8_t)(34 - (y * 15 / height));
             uint32_t band_height = height - y < 32 ? height - y : 32;
             display_fill_rect_rgb(0, y, width, band_height, shade,
                 (uint8_t)(shade + 1), (uint8_t)(shade + 4));
+        }
+        if (shell_profile_active) {
+            shell_profile_background_cycles +=
+                shell_profile_read_timestamp_counter() - background_start;
         }
         shell_ui_draw_glass_panel(SHELL_INSTALLER_PANEL_LEFT,
             SHELL_INSTALLER_PANEL_TOP,
