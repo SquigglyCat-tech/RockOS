@@ -1525,6 +1525,8 @@ static void shell_installer_install(void) {
 }
 
 static void shell_installer_open(void) {
+    /* Temporary diagnostic mode: profile full installer page draws to COM1. */
+    shell_profile_enabled = true;
     shell_installer_active = true;
     shell_installer_page = SHELL_INSTALLER_PAGE_PREFERENCES;
     shell_installer_pressed_button = SHELL_INSTALLER_BUTTON_NONE;
