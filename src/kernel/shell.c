@@ -403,7 +403,8 @@ static void shell_ui_draw_backdrop(const char* title, const char* subtitle) {
     uint32_t width;
     uint32_t height;
     if (!shell_get_graphics_size(&width, &height)) return;
-    display_clear();
+    /* The gradient bands below cover the entire framebuffer, so clearing it
+       first just writes every pixel a second time before painting the gradient. */
     for (uint32_t y = 0; y < height; y += 32) {
         uint8_t shade = (uint8_t)(34 - (y * 15 / height));
         uint32_t band_height = height - y < 32 ? height - y : 32;
@@ -965,7 +966,7 @@ static void shell_installer_draw_setup(void) {
     uint32_t width;
     uint32_t height;
     if (shell_get_graphics_size(&width, &height)) {
-        display_clear();
+        /* The gradient bands fully cover the screen; avoid a redundant clear. */
         for (uint32_t y = 0; y < height; y += 32) {
             uint8_t shade = (uint8_t)(34 - (y * 15 / height));
             uint32_t band_height = height - y < 32 ? height - y : 32;
