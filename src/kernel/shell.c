@@ -1770,7 +1770,6 @@ static void shell_installer_handle_key(const input_key_event_t* event) {
 
 void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_button_down) {
     if (!shell_installer_active) return;
-    shell_profile_enabled = true;
 
     uint32_t width;
     uint32_t height;
@@ -1795,7 +1794,13 @@ void shell_handle_mouse_event(uint32_t x, uint32_t y, bool left_button_down) {
         return;
     }
 
-    shell_installer_pressed_button = SHELL_INSTALLER_BUTTON_NONE;
+    /* Mouse packets arrive continuously while a button is held. Only the
+       initial press should redraw the page; repainting the full framebuffer
+       for every packet makes the installer appear to freeze in emulators. */
+    if (shell_installer_pressed_button != SHELL_INSTALLER_BUTTON_NONE) {
+        return;
+    }
+
     shell_ui_rect_t rect;
     shell_installer_button_t button = shell_installer_button_at(x, y,
         width, height, &rect);
