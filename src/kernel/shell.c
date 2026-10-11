@@ -2252,6 +2252,9 @@ static void shell_print_help(void) {
     shell_write("cpu       Show CPU vendor and identification\n");
     shell_write("irq       Show IDT vectors and PIC masks\n");
     shell_write("audio     Show AC'97 device and playback diagnostics\n");
+    shell_write("tone      Play a one-second 880 Hz test tone\n");
+    shell_write("sound     Play the built-in error sound\n");
+    shell_write("audiostop Stop current audio playback\n");
     shell_write("ring3fault Trigger the isolated Ring 3 fault test\n");
     shell_write("installer Check for a safe dedicated install disk\n");
     shell_write("version   Show RockOS version and kernel identity\n");
@@ -2332,6 +2335,28 @@ static void shell_execute(void) {
         shell_print_irq();
     } else if (command_is(command_buffer, "audio")) {
         shell_print_audio();
+    } else if (command_is(command_buffer, "tone")) {
+        if (!audio_prepare_test_tone() || !audio_start_prepared()) {
+            shell_write("Audio tone failed: ");
+            shell_write(audio_initialization_status());
+            display_putchar('\n');
+        } else {
+            shell_write("Playing 880 Hz test tone for one second.\n");
+        }
+    } else if (command_is(command_buffer, "sound")) {
+        audio_play_error_sound();
+        audio_diagnostics_t diagnostics;
+        audio_get_diagnostics(&diagnostics);
+        shell_write(diagnostics.last_play_succeeded
+            ? "Playing built-in error sound.\n"
+            : "Error sound playback failed: ");
+        if (!diagnostics.last_play_succeeded) {
+            shell_write(audio_initialization_status());
+            display_putchar('\n');
+        }
+    } else if (command_is(command_buffer, "audiostop")) {
+        stop();
+        shell_write("Audio playback stopped.\n");
     } else if (command_is(command_buffer, "ring3fault")) {
         if (!task_create("ring3_fault", ring3_fault_test_task)) {
             shell_write("Unable to create the Ring 3 fault-test task.\n");
