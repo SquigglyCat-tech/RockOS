@@ -9,7 +9,7 @@
 #define BOOT_BAR_BLOCK_HEIGHT 8U
 #define BOOT_BAR_GAP 5U
 #define BOOT_FRAME_CYCLES 120000000ULL
-#define BOOT_HOLD_CYCLES 300000000ULL
+#define BOOT_HOLD_CYCLES 3000000000ULL
 
 static uint64_t read_tsc(void) {
     uint32_t low;
