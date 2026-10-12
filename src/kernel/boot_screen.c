@@ -83,8 +83,6 @@ void boot_screen_show(void) {
         return;
     }
 
-    if (width < 320U) width = 320U;
-    if (height < 200U) height = 200U;
     display_clear();
 
     uint32_t bar_x;
