@@ -189,7 +189,7 @@ $(INSTALL_DISK):
 
 # Keep the install target first so reboot boots it; leave the CD as fallback.
 run: $(ISO_IMAGE) $(DATA_DISK) $(INSTALL_DISK)
-	qemu-system-x86_64 -machine pc -serial stdio \
+	qemu-system-x86_64 -machine pc -rtc base=localtime -serial stdio \
 		-audiodev driver=dsound,id=audio0 \
 		-device AC97,audiodev=audio0 \
 		-drive file=$(INSTALL_DISK),format=raw,if=none,id=target \
@@ -200,7 +200,7 @@ run: $(ISO_IMAGE) $(DATA_DISK) $(INSTALL_DISK)
 		-device ide-cd,drive=installcd,bus=ide.1,unit=0,bootindex=3
 
 run-installed: $(INSTALL_DISK) $(DATA_DISK)
-	qemu-system-x86_64 -machine pc -boot order=c \
+	qemu-system-x86_64 -machine pc -rtc base=localtime -boot order=c \
 		-audiodev driver=dsound,id=audio0 \
 		-device AC97,audiodev=audio0 \
 		-drive file=$(INSTALL_DISK),format=raw,if=ide,index=0 \
