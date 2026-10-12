@@ -1954,62 +1954,64 @@ static void draw_wallpaper(void)
 /* =============================== Drawing ============================== */
 /* ====================================================================== */
 
-/* Desktop shortcuts use 16x16 transparent pixel sprites. These are
- * original RockOS interpretations of the CC0 pixel-icon aesthetic from
- * Telex Operator's Pixel-Art Icons pack; no Windows icon bitmaps are copied.
- * '.' is transparent, so the desktop wallpaper shows through. */
-static const char* const desktop_pixel_icons[5][16] = {
-    { /* My Computer: chunky CRT monitor */
-        "................", "....########....", "...#llllllll#...", "...#lmmmmmm#....",
-        "...#lmmmmmm#....", "...#lmmmmmm#....", "...#llllllll#...", "....########....",
-        ".......##.......", ".......##.......", "....########....", "...#llllllll#...",
-        "...#lmmmmmm#....", "...#lmmmmmm#....", "....########....", "................"
+/* Telex Operator's CC0 Pixel-Art Icons (16x16 PNGs), converted to
+ * palette-indexed rows for the framebuffer. Transparent source pixels are
+ * '.', so the desktop wallpaper remains visible through the icons.
+ * Source: https://github.com/tstamborski/pixelart-icons
+ * Icons: computer16.png, folder-blue16.png, earth16.png, bin16.png.
+ */
+static const char* const telex_icon_rows[4][16] = {
+    { /* computer16.png */
+        "KKKKKKKKKKKKKKKK", "KHHHHHHHHKHHHHHK", "KHCCCCCCHKHLLLHK",
+        "KHCCCCCCHKHHHHHK", "KHCCCCCCHKHHHGHK", "KHCCCCCCHKHHHHHK",
+        "KHCCCCCCHKHHHHHK", "KHHHHHHHHKLHHHLK", "KKKKLLKKKKHHHHHK",
+        ".KHHHHHHKKLHHHLK", ".KKKKKKKKKKKKKKK", ".......K....K...",
+        ".KKKKKKKKK...KK.", "KLHLHLHLHLK.KHLK", "KHLHLHLHLHK.KHHK",
+        "KKKKKKKKKKK.KKKK"
     },
-    { /* My Documents: folder with a sheet */
-        "................", "....######......", "...#llllll#.....",
-        "...##########...", "...#llllllll#...", "..#llllllllll#..",
-        "..#ll######ll#..", "..#ll#wwww#ll#..", "..#ll#wwww#ll#..",
-        "..#ll#wwww#ll#..", "..#ll#wwww#ll#..", "..#ll#wwww#ll#..",
-        "..#ll######ll#..", "...#llllllll#...", "...##########...", "................"
+    { /* folder-blue16.png */
+        "................", "................", "....BBBBBB......",
+        "..KBBBBBBBKKKKK.", ".KBBBBBBBBBBBBKK", ".BBBBBBBBBBBBBBK",
+        ".BBWWWWWWBBBBBBK", ".BBWWWWWWBBBBBBK", ".BBWWWWWWBBBBBBK",
+        ".BBBBBBBBBBBBBBK", ".BBBBBBBBBBBBBBK", ".BBBBBBBBBBBBBBK",
+        ".BBBBBBBBBBBBBBK", ".BBBBBBBBBBBBBB.", "..BBBBBBBBBBBB..",
+        "................"
     },
-    { /* Network: linked nodes */
-        "................", "..########......", ".#llllllll#.....",
-        ".#lmmmmmm#......", ".#lmmmmmm#......", ".#llllllll#.....",
-        "..########......", "......##........", "....######......",
-        "....#llll#......", "....#llll#......", "....######......",
-        "........##......", "......########..", ".....#llllllll#.",
-        "......########.."
+    { /* earth16.png */
+        "................", "......WWWW......", "....GPPGGPGG....",
+        "...GPPGPPGGGG...", "..PPPPPGGGGGGG..", "..PPPGGGGGGGGG..",
+        ".PPPPGPPPGGGGGG.", ".GPPPPGGPPGGPPG.", ".GGGPPGGGGGPPPP.",
+        ".GGGGPGGGGGPPPP.", "..GGPPPGGGPGPP..", "..GGPPPGGPGPPP..",
+        "...PPPPGPPPPP...", "....PPPPPPPP....", "......WWWW......",
+        "................"
     },
-    { /* Recycle Bin: lid, body and paper slats */
-        "................", ".....######.....", "....#llllll#....",
-        "......####......", ".......##.......", "...##########...",
-        "...#llllllll#...", "...#lmmmmmm#....", "...#l#ll#ll#....",
-        "...#l#ll#ll#....", "...#l#ll#ll#....", "...#l#ll#ll#....",
-        "...#llllllll#...", "....########....", "................", "................"
-    },
-    { /* Command Prompt: pixel terminal */
-        "................", "..############..", "..#llllllllll#..",
-        "..############..", "..#dddddddddd#..", "..#d##d......#..",
-        "..#d##d......#..", "..#ddd########..", "..#...........#.",
-        "..#...........#.", "..#...........#.", "..#...........#.",
-        "..############..", "................", "................", "................"
+    { /* bin16.png */
+        ".......K........", "....KKKKKKK.....", "...KDDDDDDDK....",
+        "..KKKKKKKKKKK...", "...KKKKKKKKK....", "...KDDDDDDDK....",
+        "...KDKDKDKDK....", "...KDKDKDKDK....", "...KDKDKDKDK....",
+        "...KDKDKDKDK....", "...KDKDKDKDK....", "...KDKDKDKDK....",
+        "...KDKDKDKDK....", "...KDKDKDKDK....", "...KDDDDDDDK....",
+        "....KKKKKKK....."
     }
 };
 
-static uint32_t desktop_pixel_colour(char pixel)
+static uint32_t telex_pixel_colour(char pixel)
 {
     switch (pixel) {
-    case '#': return IC_LINE;
-    case 'd': return IC_DK;
-    case 'm': return IC_MD;
-    case 'l': return IC_LT;
-    case 'w': return IC_WH;
+    case 'K': return 0x000000;
+    case 'W': return 0xFFFFFF;
+    case 'B': return 0x4141FF;
+    case 'C': return 0x61A2FF;
+    case 'G': return 0x49AA10;
+    case 'L': return 0xB2B2B2;
+    case 'H': return 0xEBEBEB;
+    case 'P': return 0x2800BA;
+    case 'D': return 0x306141;
     default:  return 0;
     }
 }
 
-static void draw_desktop_pixel_icon(int type, int32_t x, int32_t y,
-    int32_t size)
+static void draw_telex_icon(int type, int32_t x, int32_t y, int32_t size)
 {
     int sprite = -1;
     int row, col;
@@ -2019,7 +2021,6 @@ static void draw_desktop_pixel_icon(int type, int32_t x, int32_t y,
     case IC_DOCS:     sprite = 1; break;
     case IC_NETWORK:  sprite = 2; break;
     case IC_RECYCLE:  sprite = 3; break;
-    case IC_CMD:      sprite = 4; break;
     default:
         draw_icon(type, x, y, size);
         return;
@@ -2027,8 +2028,8 @@ static void draw_desktop_pixel_icon(int type, int32_t x, int32_t y,
 
     for (row = 0; row < 16; row++) {
         for (col = 0; col < 16; col++) {
-            char pixel = desktop_pixel_icons[sprite][row][col];
-            uint32_t colour = desktop_pixel_colour(pixel);
+            char pixel = telex_icon_rows[sprite][row][col];
+            uint32_t colour = telex_pixel_colour(pixel);
             int32_t x0, y0, x1, y1;
             if (pixel == '.' || colour == 0) continue;
             x0 = x + (col * size) / 16;
@@ -2051,7 +2052,7 @@ static void draw_icons(void)
         int32_t l1w, l2w, l1x, l2x;
         if (!box_touch(&clip, x, y, ICON_TILE_W, ICON_TILE_H)) continue;
 
-        draw_desktop_pixel_icon(desk_icon_ic[i], ix, y + 6, 32);
+        draw_telex_icon(desk_icon_ic[i], ix, y + 6, 32);
         if (sel) {
             display_blend_rect_rgb((uint32_t)(ix - 2), (uint32_t)(y + 4), 36, 36,
                 (uint8_t)(TH.select_bg >> 16), (uint8_t)(TH.select_bg >> 8),
