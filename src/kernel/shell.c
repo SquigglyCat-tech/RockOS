@@ -402,7 +402,7 @@ static void shell_ui_draw_backdrop(const char* title, const char* subtitle) {
     uint32_t width;
     uint32_t height;
     if (!shell_get_graphics_size(&width, &height)) return;
-    display_clear();
+    /* The bands cover every pixel; clearing first just repeats the full-screen fill. */
     for (uint32_t y = 0; y < height; y += 32) {
         uint8_t shade = (uint8_t)(34 - (y * 15 / height));
         uint32_t band_height = height - y < 32 ? height - y : 32;
@@ -425,8 +425,9 @@ static void shell_ui_draw_glass_panel(uint32_t x, uint32_t y,
     display_fill_rect_rgb(x, y, width, height, 108, 111, 116);
     display_fill_rect_rgb(x + 1, y + 1, width - 2, height - 2,
         18, 20, 23);
-    display_blend_rect_rgb(x + 2, y + 2, width - 4, height - 4,
-        130, 134, 140, 15);
+    /* A solid inner surface avoids blending every pixel on each page change. */
+    display_fill_rect_rgb(x + 2, y + 2, width - 4, height - 4,
+        24, 26, 30);
     display_blend_rect_rgb(x + 2, y + 2, width - 4, 2,
         255, 255, 255, 105);
     display_blend_rect_rgb(x + 2, y + 4, 2, height - 6,
@@ -964,7 +965,7 @@ static void shell_installer_draw_setup(void) {
     uint32_t width;
     uint32_t height;
     if (shell_get_graphics_size(&width, &height)) {
-        display_clear();
+        /* The gradient bands fill the entire screen, so display_clear() is redundant. */
         for (uint32_t y = 0; y < height; y += 32) {
             uint8_t shade = (uint8_t)(34 - (y * 15 / height));
             uint32_t band_height = height - y < 32 ? height - y : 32;
