@@ -2428,7 +2428,7 @@ static void draw_display(int w, int32_t wx, int32_t wy)
         int32_t card_y = wy + SET_G2Y + 26 + (i / 2) * WALL_ROW_STEP;
         draw_card(card_x, card_y, &TH, i == wall_style, wall_names[i], i);
     }
-    text(cx + 14, wy + hh - FRAME - 32,
+    text(cx + 14, wy + hh - FRAME - 60,
         "Changes apply immediately. Ctrl+Alt+T cycles schemes.", TH.t_dim);
 }
 
