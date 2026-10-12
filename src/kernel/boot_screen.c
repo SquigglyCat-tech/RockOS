@@ -1,15 +1,28 @@
 #include "boot_screen.h"
 
 #include "display.h"
-#include "timer.h"
-
 #include <stdint.h>
 
 #define BOOT_BAR_BLOCKS 12U
 #define BOOT_BAR_BLOCK_WIDTH 18U
 #define BOOT_BAR_BLOCK_HEIGHT 8U
 #define BOOT_BAR_GAP 5U
-#define BOOT_FRAME_TICKS 10U
+#define BOOT_FRAME_CYCLES 120000000ULL
+#define BOOT_HOLD_CYCLES 300000000ULL
+
+static uint64_t read_tsc(void) {
+    uint32_t low;
+    uint32_t high;
+    asm volatile ("rdtsc" : "=a"(low), "=d"(high));
+    return ((uint64_t)high << 32) | low;
+}
+
+static void wait_cycles(uint64_t cycles) {
+    uint64_t start = read_tsc();
+    while (read_tsc() - start < cycles) {
+        asm volatile ("pause");
+    }
+}
 
 static void draw_boot_screen(uint32_t progress, uint32_t width,
     uint32_t height) {
@@ -67,20 +80,14 @@ void boot_screen_show(void) {
         return;
     }
 
-    uint64_t start = timer_get_ticks();
     uint32_t progress = 0;
     draw_boot_screen(progress, width, height);
 
     while (progress < BOOT_BAR_BLOCKS) {
-        uint64_t frame_start = timer_get_ticks();
-        while (timer_get_ticks() - frame_start < BOOT_FRAME_TICKS) {
-            asm volatile ("hlt" : : : "memory");
-        }
+        wait_cycles(BOOT_FRAME_CYCLES);
         progress++;
         draw_boot_screen(progress, width, height);
     }
 
-    while (timer_get_ticks() - start < BOOT_FRAME_TICKS * 13U) {
-        asm volatile ("hlt" : : : "memory");
-    }
+    wait_cycles(BOOT_HOLD_CYCLES);
 }
