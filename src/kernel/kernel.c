@@ -19,6 +19,7 @@
 #include "serial.h"
 #include "desktop.h"
 #include "tour.h"
+#include "boot_screen.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -473,12 +474,13 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         }
     }
 
-    shell_init();
-    serial_write_string("[boot] shell initialized; enabling interrupts\n");
-    audio_play_test_tone();
-
-    // 5. Enable interrupts only after complete hardware setup
+    // Hardware setup is complete; let the timer drive the splash animation.
     asm volatile ("sti");
+    boot_screen_show();
+
+    shell_init();
+    serial_write_string("[boot] shell initialized; interrupts already enabled\n");
+    audio_play_test_tone();
 
     uint64_t last_rendered_tick = UINT64_MAX;
     /* Latched click counters (see input_mouse_state_t) so no click is lost
