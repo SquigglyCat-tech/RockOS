@@ -1954,6 +1954,93 @@ static void draw_wallpaper(void)
 /* =============================== Drawing ============================== */
 /* ====================================================================== */
 
+/* Desktop shortcuts use 16x16 transparent pixel sprites. These are
+ * original RockOS interpretations of the CC0 pixel-icon aesthetic from
+ * Telex Operator's Pixel-Art Icons pack; no Windows icon bitmaps are copied.
+ * '.' is transparent, so the desktop wallpaper shows through. */
+static const char* const desktop_pixel_icons[5][16] = {
+    { /* My Computer: chunky CRT monitor */
+        "................", "....########....", "...#llllllll#...", "...#lmmmmmm#....",
+        "...#lmmmmmm#....", "...#lmmmmmm#....", "...#llllllll#...", "....########....",
+        ".......##.......", ".......##.......", "....########....", "...#llllllll#...",
+        "...#lmmmmmm#....", "...#lmmmmmm#....", "....########....", "................"
+    },
+    { /* My Documents: folder with a sheet */
+        "................", "....######......", "...#llllll#.....",
+        "...##########...", "...#llllllll#...", "..#llllllllll#..",
+        "..#ll######ll#..", "..#ll#wwww#ll#..", "..#ll#wwww#ll#..",
+        "..#ll#wwww#ll#..", "..#ll#wwww#ll#..", "..#ll#wwww#ll#..",
+        "..#ll######ll#..", "...#llllllll#...", "...##########...", "................"
+    },
+    { /* Network: linked nodes */
+        "................", "..########......", ".#llllllll#.....",
+        ".#lmmmmmm#......", ".#lmmmmmm#......", ".#llllllll#.....",
+        "..########......", "......##........", "....######......",
+        "....#llll#......", "....#llll#......", "....######......",
+        "........##......", "......########..", ".....#llllllll#.",
+        "......########.."
+    },
+    { /* Recycle Bin: lid, body and paper slats */
+        "................", ".....######.....", "....#llllll#....",
+        "......####......", ".......##.......", "...##########...",
+        "...#llllllll#...", "...#lmmmmmm#....", "...#l#ll#ll#....",
+        "...#l#ll#ll#....", "...#l#ll#ll#....", "...#l#ll#ll#....",
+        "...#llllllll#...", "....########....", "................", "................"
+    },
+    { /* Command Prompt: pixel terminal */
+        "................", "..############..", "..#llllllllll#..",
+        "..############..", "..#dddddddddd#..", "..#d##d.......#..",
+        "..#d##d.......#..", "..#ddd#########..", "..#............#.",
+        "..#............#.", "..#............#.", "..#............#.",
+        "..############..", "................", "................", "................"
+    }
+};
+
+static uint32_t desktop_pixel_colour(char pixel)
+{
+    switch (pixel) {
+    case '#': return IC_LINE;
+    case 'd': return IC_DK;
+    case 'm': return IC_MD;
+    case 'l': return IC_LT;
+    case 'w': return IC_WH;
+    default:  return 0;
+    }
+}
+
+static void draw_desktop_pixel_icon(int type, int32_t x, int32_t y,
+    int32_t size)
+{
+    int sprite = -1;
+    int row, col;
+
+    switch (type) {
+    case IC_COMPUTER: sprite = 0; break;
+    case IC_DOCS:     sprite = 1; break;
+    case IC_NETWORK:  sprite = 2; break;
+    case IC_RECYCLE:  sprite = 3; break;
+    case IC_CMD:      sprite = 4; break;
+    default:
+        draw_icon(type, x, y, size);
+        return;
+    }
+
+    for (row = 0; row < 16; row++) {
+        for (col = 0; col < 16; col++) {
+            char pixel = desktop_pixel_icons[sprite][row][col];
+            uint32_t colour = desktop_pixel_colour(pixel);
+            int32_t x0, y0, x1, y1;
+            if (pixel == '.' || colour == 0) continue;
+            x0 = x + (col * size) / 16;
+            y0 = y + (row * size) / 16;
+            x1 = x + ((col + 1) * size) / 16;
+            y1 = y + ((row + 1) * size) / 16;
+            if (x1 > x0 && y1 > y0)
+                rect(x0, y0, x1 - x0, y1 - y0, colour);
+        }
+    }
+}
+
 static void draw_icons(void)
 {
     int i;
@@ -1964,7 +2051,7 @@ static void draw_icons(void)
         int32_t l1w, l2w, l1x, l2x;
         if (!box_touch(&clip, x, y, ICON_TILE_W, ICON_TILE_H)) continue;
 
-        draw_icon(desk_icon_ic[i], ix, y + 6, 32);
+        draw_desktop_pixel_icon(desk_icon_ic[i], ix, y + 6, 32);
         if (sel) {
             display_blend_rect_rgb((uint32_t)(ix - 2), (uint32_t)(y + 4), 36, 36,
                 (uint8_t)(TH.select_bg >> 16), (uint8_t)(TH.select_bg >> 8),
