@@ -19,6 +19,7 @@
 #include "serial.h"
 #include "desktop.h"
 #include "tour.h"
+#include "boot_screen.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -473,6 +474,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         }
     }
 
+    boot_screen_show();
     shell_init();
     serial_write_string("[boot] shell initialized; enabling interrupts\n");
     audio_play_test_tone();
