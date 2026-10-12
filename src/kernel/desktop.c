@@ -113,12 +113,14 @@ static void adapter_on_exit(void)
 #define SET_G1Y         (C0Y + 8)
 #define SET_G2Y         (C0Y + 8 + 116 + 12)
 #define SET_GH          116
+#define SET_WALL_GH     180
+#define WALL_ROW_STEP   76
 #define SET_CARD_W      150
 #define SET_CARD_H      74
 #define SET_STEP        162
 
 #define THEME_COUNT     3
-#define WALL_STYLES     3
+#define WALL_STYLES     4
 
 enum {
     W_COMPUTER = 0, W_TERM, W_SYSINFO, W_DISPLAY, W_ABOUT, W_NETWORK,
@@ -244,7 +246,7 @@ static const theme_t themes[THEME_COUNT] = {
 };
 
 static const char* const wall_names[WALL_STYLES] = {
-    "RockOS Logo", "Solid", "Gradient"
+    "RockOS Gradient", "Dark RockOS", "Solid", "Classic Gradient"
 };
 
 /* These survive closing and re-opening the desktop. */
@@ -906,19 +908,20 @@ static int32_t task_btn_x(int k)
 
 static bool logo_visible(void)
 {
-    return wall_style == 0 &&
-        sw >= (int32_t)DISPLAY_ROCKOS_LOGO_WIDTH + 140 &&
+    return sw >= (int32_t)DISPLAY_ROCKOS_LOGO_WIDTH + 40 &&
         tb_y >= (int32_t)DISPLAY_ROCKOS_LOGO_HEIGHT;
 }
 
 static int32_t logo_x(void)
 {
-    return (sw - (int32_t)DISPLAY_ROCKOS_LOGO_WIDTH) / 2 + 60;
+    /* Centre the actual RockOS logo horizontally on the wallpaper. */
+    return (sw - (int32_t)DISPLAY_ROCKOS_LOGO_WIDTH) / 2;
 }
 
 static int32_t logo_y(void)
 {
-    return (tb_y * 66) / 100 - (int32_t)DISPLAY_ROCKOS_LOGO_HEIGHT / 2;
+    /* Centre within the usable wallpaper area above the taskbar. */
+    return (tb_y - (int32_t)DISPLAY_ROCKOS_LOGO_HEIGHT) / 2;
 }
 
 static int widget_boxes(box_t* out)
@@ -1674,8 +1677,9 @@ static region_t hit_test(int32_t x, int32_t y)
                     }
                 }
                 for (k = 0; k < WALL_STYLES; k++) {
-                    if (inside(lx, ly, SET_GX + 12 + k * SET_STEP, SET_G2Y + 26,
-                        SET_CARD_W, SET_CARD_H)) {
+                    int32_t wall_x = SET_GX + 12 + (k % 2) * SET_STEP;
+                    int32_t wall_y = SET_G2Y + 26 + (k / 2) * WALL_ROW_STEP;
+                    if (inside(lx, ly, wall_x, wall_y, SET_CARD_W, SET_CARD_H)) {
                         r.kind = R_SET_WALL;
                         r.sub = (int8_t)k;
                     }
@@ -1937,16 +1941,35 @@ static void draw_icon_dim(int type, int32_t x, int32_t y, int32_t size,
 
 static void draw_wallpaper(void)
 {
+    int32_t y;
+
     if (wall_style == 2) {
-        int32_t y;
-        for (y = 0; y < tb_y; y += 4) {
-            int32_t bh = (y + 4 <= tb_y) ? 4 : tb_y - y;
-            if (y + bh <= clip.y0 || y >= clip.y1) continue;
-            rect(0, y, sw, bh,
-                mix_rgb(TH.desk_hi, TH.desktop, (y * 100) / tb_y));
-        }
-    } else {
+        /* Plain colour, using the selected desktop colour scheme. */
         rect(0, 0, sw, tb_y, TH.desktop);
+        return;
+    }
+
+    for (y = 0; y < tb_y; y += 4) {
+        int32_t bh = (y + 4 <= tb_y) ? 4 : tb_y - y;
+        uint32_t top, bottom;
+
+        if (y + bh <= clip.y0 || y >= clip.y1) continue;
+
+        if (wall_style == 0) {
+            /* RockOS blue gradient: vivid enough to feel branded, still dark. */
+            top = 0x1C5C88;
+            bottom = 0x091B32;
+        } else if (wall_style == 1) {
+            /* A very dark graphite wallpaper for a quieter desktop. */
+            top = 0x15171B;
+            bottom = 0x030405;
+        } else {
+            /* Classic gradient follows the selected colour scheme. */
+            top = TH.desk_hi;
+            bottom = TH.desktop;
+        }
+
+        rect(0, y, sw, bh, mix_rgb(top, bottom, (y * 100) / tb_y));
     }
 }
 
@@ -2365,13 +2388,23 @@ static void draw_card(int32_t x, int32_t y, const theme_t* t, bool selected,
         rect(x + 16, y + 20, 66, 16, t->window_bg);
         rect(x, y + 44, SET_CARD_W, 8, t->face);
         rect(x + 3, y + 46, 22, 4, t->title_a0);
-    } else if (style == 0) {
+    } else if (style == 0 || style == 1 || style == 3) {
+        uint32_t top, bottom;
+        int32_t yy;
+        if (style == 0) {
+            top = 0x1C5C88; bottom = 0x091B32;
+        } else if (style == 1) {
+            top = 0x15171B; bottom = 0x030405;
+        } else {
+            top = t->desk_hi; bottom = t->desktop;
+        }
+        for (yy = 0; yy < 52; yy += 4) {
+            int32_t bh = (yy + 4 <= 52) ? 4 : 52 - yy;
+            rect(x, y + yy, SET_CARD_W, bh,
+                mix_rgb(top, bottom, (yy * 100) / 52));
+        }
+        /* A small RockOS mark previews the centred logo on the wallpaper. */
         draw_icon(IC_ABOUT, x + SET_CARD_W / 2 - 14, y + 10, 28);
-    } else if (style == 2) {
-        rect(x, y, SET_CARD_W, 26, t->desk_hi);
-        rect(x, y + 26, SET_CARD_W, 26, t->desktop);
-        rect(x, y + 13, SET_CARD_W, 13, mix_rgb(t->desk_hi, t->desktop, 33));
-        rect(x, y + 26, SET_CARD_W, 13, mix_rgb(t->desk_hi, t->desktop, 66));
     }
     bevel_sunken(x, y, SET_CARD_W, 52);
     text(x + 2, y + 52, label, TH.t_face);
@@ -2389,10 +2422,11 @@ static void draw_display(int w, int32_t wx, int32_t wy)
         draw_card(wx + SET_GX + 12 + i * SET_STEP, wy + SET_G1Y + 26, &themes[i],
             i == theme_index, themes[i].name, -1);
     }
-    groupbox(wx + SET_GX, wy + SET_G2Y, cw - 20, SET_GH, "Wallpaper");
+    groupbox(wx + SET_GX, wy + SET_G2Y, cw - 20, SET_WALL_GH, "Wallpaper");
     for (i = 0; i < WALL_STYLES; i++) {
-        draw_card(wx + SET_GX + 12 + i * SET_STEP, wy + SET_G2Y + 26, &TH,
-            i == wall_style, wall_names[i], i);
+        int32_t card_x = wx + SET_GX + 12 + (i % 2) * SET_STEP;
+        int32_t card_y = wy + SET_G2Y + 26 + (i / 2) * WALL_ROW_STEP;
+        draw_card(card_x, card_y, &TH, i == wall_style, wall_names[i], i);
     }
     text(cx + 14, wy + hh - FRAME - 32,
         "Changes apply immediately. Ctrl+Alt+T cycles schemes.", TH.t_dim);
