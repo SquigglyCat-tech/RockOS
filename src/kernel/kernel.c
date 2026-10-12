@@ -12,6 +12,7 @@
 #include "io.h"
 #include "pmm.h"
 #include "pci.h"
+#include "pnp.h"
 #include "storage.h"
 #include "filesystem.h"
 #include "shell.h"
@@ -28,6 +29,8 @@
 #define STATUS_NAME_WIDTH 12
 #define SCHEDULER_DISPLAY_WIDTH 80
 #define UPTIME_DISPLAY_MODULUS 10000000000ULL
+
+extern const pnp_driver_t audio_pnp_driver;
 
 static volatile uint32_t task_a_progress = 0;
 static volatile uint32_t task_b_progress = 0;
@@ -345,15 +348,27 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     display_puts("[+] Initializing PIT Timer (100 Hz)...\n");
     timer_init(100);
 
-    display_puts("[+] Initializing PCI Bus...\n");
+    display_puts("[+] Enumerating PCI Bus...\n");
     pci_init();
     pci_scan();
+    display_puts("[+] PCI devices discovered: ");
+    print_number(pci_get_device_count());
+    display_putchar('\n');
 
-    display_puts("[+] Initializing AC'97 PCM audio...\n");
-    if (audio_init()) {
+    display_puts("[+] Starting PCI Plug and Play...\n");
+    pnp_init();
+    if (!pnp_register_driver(&audio_pnp_driver)) {
+        display_puts("[-] Failed to register AC'97 PnP driver.\n");
+    }
+    size_t pnp_bound = pnp_bind_devices();
+    display_puts("[+] PnP drivers bound: ");
+    print_number(pnp_bound);
+    display_putchar('\n');
+
+    if (pnp_bound > 0) {
         display_puts("[+] AC'97 audio ready.\n");
     } else {
-        display_puts("[-] AC'97 audio unavailable: ");
+        display_puts("[-] No compatible PCI audio driver bound: ");
         display_puts(audio_initialization_status());
         display_putchar('\n');
         audio_play_error_sound();
