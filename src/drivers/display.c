@@ -70,6 +70,8 @@ static uint8_t cursor_y;
 static uint8_t current_color = 0x0F;
 static uint16_t text_buffer[VGA_WIDTH * VGA_HEIGHT];
 static bool framebuffer_active;
+/* True when the bootloader selected a linear framebuffer before PMM setup. */
+static bool framebuffer_expected;
 static const char* framebuffer_status = "not initialized";
 static volatile uint8_t* framebuffer;
 static uint32_t framebuffer_width;
@@ -220,6 +222,17 @@ static void fill_rect_untracked(uint32_t x, uint32_t y, uint32_t width,
     for (uint32_t row = y; row < y + height; row++) {
         uint8_t* pixel = framebuffer_shadow + (size_t)row *
             framebuffer_pitch + (size_t)x * framebuffer_bytes_per_pixel;
+        if (framebuffer_bytes_per_pixel == 4 &&
+            ((uintptr_t)pixel & (sizeof(uint32_t) - 1U)) == 0 &&
+            (framebuffer_pitch & (sizeof(uint32_t) - 1U)) == 0) {
+            uint32_t* destination = (uint32_t*)pixel;
+            size_t count = width;
+            asm volatile ("cld; rep stosl"
+                : "+D"(destination), "+c"(count)
+                : "a"(color)
+                : "memory");
+            continue;
+        }
         for (uint32_t column = 0; column < width; column++) {
             for (uint8_t byte = 0; byte < framebuffer_bytes_per_pixel; byte++) {
                 pixel[byte] = (uint8_t)(color >> (byte * 8));
@@ -505,7 +518,8 @@ static void render_cell(uint8_t x, uint8_t y) {
     uint16_t entry = text_buffer[(size_t)y * VGA_WIDTH + x];
     if (framebuffer_active) {
         draw_framebuffer_cell(x, y, entry);
-    } else {
+    } else if (!framebuffer_expected) {
+        /* Avoid VGA text writes if the bootloader has already entered graphics mode. */
         VGA_MEMORY[(size_t)y * VGA_WIDTH + x] = entry;
     }
 }
@@ -522,10 +536,10 @@ static void show_mouse_cursor(void) {
     uint8_t color = (uint8_t)(mouse_cursor_saved_entry >> 8);
     uint8_t inverted_color = (uint8_t)((color << 4) | (color >> 4));
     render_cell(mouse_cursor_x, mouse_cursor_y);
-    if (!framebuffer_active) {
+    if (!framebuffer_active && !framebuffer_expected) {
         VGA_MEMORY[(size_t)mouse_cursor_y * VGA_WIDTH + mouse_cursor_x] =
             vga_entry((uint8_t)mouse_cursor_saved_entry, inverted_color);
-    } else {
+    } else if (framebuffer_active) {
         draw_framebuffer_cell(mouse_cursor_x, mouse_cursor_y,
             vga_entry((uint8_t)mouse_cursor_saved_entry, inverted_color));
     }
@@ -533,7 +547,7 @@ static void show_mouse_cursor(void) {
 }
 
 static void update_hardware_cursor(void) {
-    if (framebuffer_active) return;
+    if (framebuffer_active || framebuffer_expected) return;
     uint16_t position = (uint16_t)(cursor_y * VGA_WIDTH + cursor_x);
     outb(0x3D4, 0x0E);
     outb(0x3D5, (uint8_t)(position >> 8));
@@ -1270,6 +1284,89 @@ void display_putchar(char character) {
 void display_puts(const char* string) {
     if (!string) return;
     while (*string) display_putchar(*string++);
+}
+
+static void benchmark_fill_legacy(uint32_t color) {
+    for (uint32_t row = 0; row < framebuffer_height; row++) {
+        uint8_t* pixel = framebuffer_shadow + (size_t)row * framebuffer_pitch;
+        for (uint32_t column = 0; column < framebuffer_width; column++) {
+            for (uint8_t byte = 0; byte < framebuffer_bytes_per_pixel; byte++) {
+                pixel[byte] = (uint8_t)(color >> (byte * 8));
+            }
+            pixel += framebuffer_bytes_per_pixel;
+        }
+    }
+}
+
+static void benchmark_fill_rep_stosd(uint32_t color) {
+    for (uint32_t row = 0; row < framebuffer_height; row++) {
+        uint32_t* destination = (uint32_t*)(framebuffer_shadow +
+            (size_t)row * framebuffer_pitch);
+        size_t count = framebuffer_width;
+        asm volatile ("cld; rep stosl"
+            : "+D"(destination), "+c"(count)
+            : "a"(color)
+            : "memory");
+    }
+}
+
+void display_run_fill_benchmark(void) {
+    if (!framebuffer_active || !framebuffer_shadow) return;
+    if (framebuffer_bytes_per_pixel != 4 ||
+        (framebuffer_pitch & (sizeof(uint32_t) - 1U)) != 0) {
+        serial_write_string("[fb-bench] skipped: framebuffer is not aligned 32-bpp\n");
+        return;
+    }
+
+    const uint32_t test_color = 0x00336699U;
+    uint64_t start = display_read_timestamp_counter();
+    benchmark_fill_rep_stosd(test_color);
+    uint64_t rep_cycles = display_read_timestamp_counter() - start;
+
+    start = display_read_timestamp_counter();
+    benchmark_fill_legacy(test_color);
+    uint64_t legacy_cycles = display_read_timestamp_counter() - start;
+
+    serial_write_string("[fb-bench] fill_bytes=");
+    serial_write_dec((uint64_t)framebuffer_width * framebuffer_height *
+        framebuffer_bytes_per_pixel);
+    serial_write_string(" rep_stosl_cycles=");
+    serial_write_dec(rep_cycles);
+    serial_write_string(" legacy_byte_loop_cycles=");
+    serial_write_dec(legacy_cycles);
+    serial_write_string("\n");
+
+    /* Restore a known clean framebuffer before the boot log continues. */
+    display_clear();
+    display_present();
+}
+
+void display_set_boot_framebuffer_hint(uintptr_t boot_info_address) {
+    bool expected = false;
+    if (boot_info_address) {
+        const multiboot1_info_t* info =
+            (const multiboot1_info_t*)boot_info_address;
+        if ((info->flags & MULTIBOOT1_INFO_FRAMEBUFFER) &&
+            info->framebuffer_type == 1 &&
+            (info->framebuffer_bpp == 24 || info->framebuffer_bpp == 32) &&
+            info->framebuffer_width >= VGA_WIDTH * CELL_WIDTH &&
+            info->framebuffer_height >= VGA_HEIGHT * CELL_HEIGHT &&
+            info->framebuffer_height <= FRAMEBUFFER_MAX_ROWS &&
+            info->framebuffer_addr != 0 &&
+            info->framebuffer_pitch >=
+                (uint64_t)info->framebuffer_width *
+                    (info->framebuffer_bpp / 8U)) {
+            expected = true;
+        }
+    }
+
+    bool was_expected = framebuffer_expected;
+    framebuffer_expected = expected;
+    if (was_expected && !expected && !framebuffer_active) {
+        /* Framebuffer setup failed: resume normal VGA text output. */
+        redraw_all();
+        update_hardware_cursor();
+    }
 }
 
 void display_init(void) {
