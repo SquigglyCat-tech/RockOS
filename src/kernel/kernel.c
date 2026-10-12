@@ -291,7 +291,8 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     serial_write_hex(boot_info_address);
     serial_write_string("\n");
 
-    // 2. Initialize display subsystem
+    // 2. Avoid legacy VGA writes if the bootloader has already entered graphics mode.
+    display_set_boot_framebuffer_hint(boot_info_address);
     display_init();
 
     // 3. Print startup banner
@@ -313,10 +314,12 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     serial_write_string("[boot] PMM initialized\n[boot] initializing framebuffer\n");
     if (display_init_framebuffer(boot_info_address)) {
         serial_write_string("[boot] framebuffer initialization succeeded\n");
+        display_run_fill_benchmark();
         display_set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
         display_puts("[+] Framebuffer graphics enabled.\n");
         display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     } else {
+        display_set_boot_framebuffer_hint(0);
         serial_write_string("[boot] framebuffer initialization failed: ");
         serial_write_string(display_framebuffer_status());
         serial_write_string("\n");
