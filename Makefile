@@ -44,6 +44,7 @@ C_SOURCES = src/kernel/kernel.c \
 			src/kernel/paging.c \
 			src/kernel/pmm.c \
 			src/kernel/pci.c \
+			src/kernel/pnp.c \
 			src/kernel/block.c \
 			src/kernel/filesystem.c \
 			src/drivers/ata_pio.c \

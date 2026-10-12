@@ -2,6 +2,7 @@
 
 #include "io.h"
 #include "pci.h"
+#include "pnp.h"
 #include "pmm.h"
 
 #include <limits.h>
@@ -363,3 +364,24 @@ void audio_play_error_sound(void) {
     play_pcm(error_sound_start, sample_count / AUDIO_CHANNELS,
         AUDIO_SAMPLE_RATE);
 }
+
+/* PCI Plug and Play match entry for the Intel ICH AC'97 controller.
+ * The probe reuses the existing initialization routine, which validates BARs,
+ * enables PCI I/O + bus mastering, and checks codec/controller readiness. */
+static bool audio_pnp_probe(const pci_device_t* device) {
+    if (!device || device->vendor_id != AUDIO_PCI_VENDOR ||
+        device->device_id != AUDIO_PCI_DEVICE) {
+        return false;
+    }
+    return audio_init();
+}
+
+const pnp_driver_t audio_pnp_driver = {
+    .name = "Intel ICH AC'97",
+    .vendor_id = AUDIO_PCI_VENDOR,
+    .device_id = AUDIO_PCI_DEVICE,
+    .class_code = 0x04,
+    .subclass = 0x01,
+    .prog_if = PNP_ANY_CLASS,
+    .probe = audio_pnp_probe
+};
