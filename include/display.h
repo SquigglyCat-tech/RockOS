@@ -25,6 +25,8 @@
 #define DISPLAY_ROCKOS_LOGO_HEIGHT 116U
 #define DISPLAY_UI_TEXT_HEIGHT 20U
 
+void display_set_boot_framebuffer_hint(uintptr_t boot_info_address);
+void display_run_fill_benchmark(void);
 void display_init(void);
 bool display_init_framebuffer(uintptr_t boot_info_address);
 const char* display_framebuffer_status(void);
