@@ -29,11 +29,6 @@ static void boot_background(uint32_t width, uint32_t height) {
     display_fill_rect_rgb(0, 0, width, height,
         BOOT_BG_R, BOOT_BG_G, BOOT_BG_B);
 
-    /* Quiet horizontal accent lines give the otherwise-black screen depth. */
-    display_fill_rect_rgb(0, height / 2U + 96U, width, 1U,
-        12U, 27U, 47U);
-    display_fill_rect_rgb(0, height / 2U + 98U, width, 1U,
-        10U, 22U, 39U);
 }
 
 static void boot_draw_piece(uint32_t x, uint32_t y, uint32_t size,
@@ -77,8 +72,15 @@ void boot_animation_run(void) {
     const int32_t spread_x = (int32_t)(width / 2U) + 30;
     const int32_t spread_y = (int32_t)(height / 2U) + 30;
 
-    /* The four bright fragments accelerate toward the center. Every frame is
-     * drawn into the normal framebuffer shadow and presented once. */
+    /* Paint the static background once; subsequent frames only touch the
+     * small moving fragments so boot animation does not reintroduce full-
+     * screen framebuffer copies on every frame. */
+    boot_background(width, height);
+    uint32_t old_x[4] = {0, 0, 0, 0};
+    uint32_t old_y[4] = {0, 0, 0, 0};
+    bool old_visible[4] = {false, false, false, false};
+
+    /* The four bright fragments accelerate toward the center. */
     for (uint32_t frame = 0; frame <= BOOT_ANIMATION_FRAMES; frame++) {
         uint32_t progress = frame * 100U / BOOT_ANIMATION_FRAMES;
         uint32_t inverse = 100U - progress;
@@ -91,22 +93,30 @@ void boot_animation_run(void) {
             ? (uint32_t)(center_y - offset_y) : 0U;
         uint32_t y_bottom = (uint32_t)(center_y + offset_y);
 
-        boot_background(width, height);
-        if (x_left + piece_size < width && y_top + piece_size < height) {
-            boot_draw_piece(x_left, y_top, piece_size,
-                BOOT_BLUE_R, BOOT_BLUE_G, BOOT_BLUE_B);
+        for (uint32_t piece = 0; piece < 4U; piece++) {
+            if (old_visible[piece]) {
+                display_fill_rect_rgb(old_x[piece], old_y[piece],
+                    piece_size, piece_size, BOOT_BG_R, BOOT_BG_G, BOOT_BG_B);
+            }
         }
-        if (x_right + piece_size < width && y_top + piece_size < height) {
-            boot_draw_piece(x_right, y_top, piece_size,
-                BOOT_PALE_R, BOOT_PALE_G, BOOT_PALE_B);
-        }
-        if (x_left + piece_size < width && y_bottom + piece_size < height) {
-            boot_draw_piece(x_left, y_bottom, piece_size,
-                BOOT_PALE_R, BOOT_PALE_G, BOOT_PALE_B);
-        }
-        if (x_right + piece_size < width && y_bottom + piece_size < height) {
-            boot_draw_piece(x_right, y_bottom, piece_size,
-                BOOT_BLUE_R, BOOT_BLUE_G, BOOT_BLUE_B);
+
+        uint32_t next_x[4] = {x_left, x_right, x_left, x_right};
+        uint32_t next_y[4] = {y_top, y_top, y_bottom, y_bottom};
+        const uint8_t colors[4][3] = {
+            {BOOT_BLUE_R, BOOT_BLUE_G, BOOT_BLUE_B},
+            {BOOT_PALE_R, BOOT_PALE_G, BOOT_PALE_B},
+            {BOOT_PALE_R, BOOT_PALE_G, BOOT_PALE_B},
+            {BOOT_BLUE_R, BOOT_BLUE_G, BOOT_BLUE_B}
+        };
+        for (uint32_t piece = 0; piece < 4U; piece++) {
+            old_visible[piece] = next_x[piece] + piece_size < width &&
+                next_y[piece] + piece_size < height;
+            old_x[piece] = next_x[piece];
+            old_y[piece] = next_y[piece];
+            if (old_visible[piece]) {
+                boot_draw_piece(next_x[piece], next_y[piece], piece_size,
+                    colors[piece][0], colors[piece][1], colors[piece][2]);
+            }
         }
         display_present();
         boot_wait_ticks(BOOT_FRAME_TICKS);
