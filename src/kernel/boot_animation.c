@@ -45,7 +45,7 @@ static void boot_draw_loading(uint32_t width, uint32_t height,
     const uint32_t bar_width = 220U;
     const uint32_t bar_height = 4U;
     uint32_t x = width > bar_width ? (width - bar_width) / 2U : 0U;
-    uint32_t y = height / 2U + 102U;
+    uint32_t y = height / 2U + 120U;
     uint32_t head = (uint32_t)(phase % (bar_width + 48U));
     uint32_t left = head > 48U ? head - 48U : 0U;
     uint32_t fill = head > bar_width ? bar_width : head;
