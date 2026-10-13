@@ -1986,7 +1986,7 @@ static void draw_wallpaper(void)
 static const char* const telex_icon_rows[4][16] = {
     { /* computer16.png */
         "KKKKKKKKKKKKKKKK", "KHHHHHHHHKHHHHHK", "KHCCCCCCHKHLLLHK",
-        "KHCCCCCCHKHHHHHK", "KHCCCCCCHKHHHGHK", "KHCCCCCCHKHHHHHK",
+        "KHCCCCCCHKHHHHHK", "KHCCCCCCHKHHHLHK", "KHCCCCCCHKHHHHHK",
         "KHCCCCCCHKHHHHHK", "KHHHHHHHHKLHHHLK", "KKKKLLKKKKHHHHHK",
         ".KHHHHHHKKLHHHLK", ".KKKKKKKKKKKKKKK", ".......K....K...",
         ".KKKKKKKKK...KK.", "KLHLHLHLHLK.KHLK", "KHLHLHLHLHK.KHHK",
@@ -2001,11 +2001,11 @@ static const char* const telex_icon_rows[4][16] = {
         "................"
     },
     { /* earth16.png */
-        "................", "......WWWW......", "....GPPGGPGG....",
-        "...GPPGPPGGGG...", "..PPPPPGGGGGGG..", "..PPPGGGGGGGGG..",
-        ".PPPPGPPPGGGGGG.", ".GPPPPGGPPGGPPG.", ".GGGPPGGGGGPPPP.",
-        ".GGGGPGGGGGPPPP.", "..GGPPPGGGPGPP..", "..GGPPPGGPGPPP..",
-        "...PPPPGPPPPP...", "....PPPPPPPP....", "......WWWW......",
+        "................", "......WWWW......", "....LLLHHLL.....",
+        "...LHHLLHHLLL...", "..HHHHHLLLLLLL..", "..HHHLLLLLLLLL..",
+        ".HHHHLHHHLLLLLL.", ".LHHHHLLHHLLHHL.", ".LLLHHLLLLLHHHH.",
+        ".LLLLHLLLLLLHHHH.", "..LLHHHLLLHLLH..", "..LLHHHLLHLHHH..",
+        "...HHHHLHHHHH...", "....HHHHHHHH....", "......WWWW......",
         "................"
     },
     { /* bin16.png */
@@ -2025,11 +2025,11 @@ static uint32_t telex_pixel_colour(char pixel)
     case 'W': return 0xFFFFFF;
     case 'B': return 0x4141FF;
     case 'C': return 0x61A2FF;
-    case 'G': return 0x49AA10;
+    case 'G': return 0xB2B2B2;
     case 'L': return 0xB2B2B2;
     case 'H': return 0xEBEBEB;
-    case 'P': return 0x2800BA;
-    case 'D': return 0x306141;
+    case 'P': return 0xB2B2B2;
+    case 'D': return 0x5C5C5C;
     default:  return 0;
     }
 }
