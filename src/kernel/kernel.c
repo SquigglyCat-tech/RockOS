@@ -1,4 +1,5 @@
 #include "display.h"
+#include "boot_animation.h"
 #include "ps2.h"
 #include "keyboard.h"
 #include "mouse.h"
@@ -473,11 +474,18 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         }
     }
 
+    /* Hardware is initialized. Briefly enable PIT interrupts so the
+     * framebuffer boot animation can use timer-based frame pacing. */
+    serial_write_string("[boot] starting animated framebuffer boot screen\n");
+    asm volatile ("sti");
+    boot_animation_run();
+    asm volatile ("cli");
+
     shell_init();
     serial_write_string("[boot] shell initialized; enabling interrupts\n");
     audio_play_test_tone();
 
-    // 5. Enable interrupts only after complete hardware setup
+    // 5. Enable interrupts after the shell has finished its initial draw.
     asm volatile ("sti");
 
     uint64_t last_rendered_tick = UINT64_MAX;
