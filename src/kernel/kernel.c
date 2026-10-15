@@ -296,9 +296,9 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     display_init();
 
     // 3. Print startup banner
-    display_set_color(COLOR_YELLOW, COLOR_BLACK);
+    display_set_color(COLOR_WHITE, COLOR_BLACK);
     display_puts("ROCKOS 0.1 | Running on the ROK (RockOS Kernel)\n");
-    display_set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     display_puts("The Rock Has Booted.\n\n");
 
     display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
@@ -314,7 +314,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     serial_write_string("[boot] PMM initialized\n[boot] initializing framebuffer\n");
     if (display_init_framebuffer(boot_info_address)) {
         serial_write_string("[boot] framebuffer initialization succeeded\n");
-        display_set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+        display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
         display_puts("[+] Framebuffer graphics enabled.\n");
         display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     } else {
@@ -332,7 +332,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         audio_play_error_sound();
         for (;;) asm volatile ("cli; hlt" : : : "memory");
     }
-    display_set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
+    display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     display_puts("[+] PMM allocation/free self-test passed.\n\n");
 
     display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
