@@ -22,8 +22,8 @@
 #define BOOT_WHITE_B 255U
 
 /* PIT is configured for 100 Hz before this animation is called. */
-#define BOOT_ASSEMBLY_FRAMES 64U
-#define BOOT_FRAME_TICKS 3ULL
+#define BOOT_ASSEMBLY_FRAMES 72U
+#define BOOT_FRAME_TICKS 2ULL
 #define BOOT_LOADING_TICKS 520ULL
 #define BOOT_STATUS_TICKS 160ULL
 
@@ -103,9 +103,9 @@ void boot_animation_run(void) {
         return;
     }
 
-    const uint32_t piece_size = 24U;
+    const uint32_t piece_size = 28U;
     const int32_t center_x = (int32_t)(width / 2U);
-    const int32_t center_y = (int32_t)(height / 2U) - 62;
+    const int32_t center_y = (int32_t)(height / 2U) - 70;
     const int32_t spread_x = (int32_t)(width / 2U) + 24;
     const int32_t spread_y = (int32_t)(height / 2U) + 24;
 
@@ -122,8 +122,10 @@ void boot_animation_run(void) {
     for (uint32_t frame = 0; frame <= BOOT_ASSEMBLY_FRAMES; frame++) {
         uint32_t progress = frame * 100U / BOOT_ASSEMBLY_FRAMES;
         uint32_t inverse = 100U - progress;
-        int32_t offset_x = (spread_x * (int32_t)inverse) / 100;
-        int32_t offset_y = (spread_y * (int32_t)inverse) / 100;
+        /* Ease out: fragments arrive quickly, then settle cleanly. */
+        uint32_t eased_inverse = (inverse * inverse) / 100U;
+        int32_t offset_x = (spread_x * (int32_t)eased_inverse) / 100;
+        int32_t offset_y = (spread_y * (int32_t)eased_inverse) / 100;
         int32_t positions_x[4] = {
             center_x - offset_x, center_x + offset_x,
             center_x - offset_x, center_x + offset_x
@@ -132,7 +134,7 @@ void boot_animation_run(void) {
             center_y - offset_y, center_y - offset_y,
             center_y + offset_y, center_y + offset_y
         };
-        const uint8_t shades[4] = {224U, 160U, 160U, 255U};
+        const uint8_t shades[4] = {192U, 128U, 160U, 255U};
 
         for (uint32_t piece = 0; piece < 4U; piece++) {
             if (old_visible[piece]) {
@@ -162,8 +164,9 @@ void boot_animation_run(void) {
     boot_background(width, height);
     uint32_t logo_x = width > DISPLAY_ROCKOS_LOGO_WIDTH
         ? (width - DISPLAY_ROCKOS_LOGO_WIDTH) / 2U : 0U;
-    uint32_t logo_y = height / 2U > DISPLAY_ROCKOS_LOGO_HEIGHT / 2U + 44U
-        ? height / 2U - DISPLAY_ROCKOS_LOGO_HEIGHT / 2U - 44U : 0U;
+    /* Keep the logo/tagline group visually centered at common resolutions. */
+    uint32_t logo_y = height / 2U > DISPLAY_ROCKOS_LOGO_HEIGHT / 2U + 54U
+        ? height / 2U - DISPLAY_ROCKOS_LOGO_HEIGHT / 2U - 54U : 0U;
     display_draw_rockos_logo(logo_x, logo_y);
 
     uint32_t tagline_y = logo_y + DISPLAY_ROCKOS_LOGO_HEIGHT + 14U;
@@ -171,10 +174,10 @@ void boot_animation_run(void) {
     uint32_t tagline_x = width > 296U ? (width - 296U) / 2U : 0U;
     display_draw_text_ui(tagline_x, tagline_y, tagline, COLOR_LIGHT_GRAY);
 
-    uint32_t status_y = height / 2U + 102U;
+    uint32_t status_y = tagline_y + DISPLAY_UI_TEXT_HEIGHT + 30U;
     boot_draw_status(width, status_y, 0U);
     display_present();
-    boot_wait_ticks(45ULL);
+    boot_wait_ticks(35ULL);
 
     uint64_t start = timer_get_ticks();
     uint32_t previous_stage = UINT32_MAX;
