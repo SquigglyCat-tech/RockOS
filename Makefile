@@ -25,6 +25,12 @@ POWERSHELL ?= powershell.exe
 UI_ASSETS = src/drivers/ui_assets.h
 UI_FONT = assets/selawik/selawk.ttf
 UI_FONT_LICENSE = assets/selawik/OFL.txt
+# Desktop photo wallpaper: PNG -> raw RGB888 -> embedded by wallpaper_data.S.
+# WALLPAPER_W/H must match WALL_SRC_W/H in src/kernel/desktop.c.
+WALLPAPER_PNG = assets/wallpaper.png
+WALLPAPER_RGB = assets/wallpaper.rgb
+WALLPAPER_W = 960
+WALLPAPER_H = 640
 
 C_SOURCES = src/kernel/kernel.c \
             src/kernel/boot_animation.c \
@@ -57,7 +63,8 @@ ASM64_SOURCES = src/arch/x86_64/boot.S \
 			  src/arch/x86_64/isr.S \
 			  src/arch/x86_64/ring3.S \
 			  src/arch/x86_64/context_switch.S \
-			  src/drivers/error_sound.S
+			  src/drivers/error_sound.S \
+			  src/drivers/wallpaper_data.S
 
 # 32-bit arch sources land in src/arch/i386/ as the port progresses
 # (boot32.S, gdt32_load.S, isr32.S, ring3_32.S, context32_switch.S).
@@ -81,7 +88,7 @@ OBJS32_ARCH_O = $(OBJS32_ARCH:.S=.o)
 C_SOURCES32 = $(filter-out src/kernel/paging.c,$(C_SOURCES)) \
               src/arch/i386/paging32.c \
               src/arch/i386/divdi3.c
-OBJS32 = $(OBJS32_ARCH_O) $(C_SOURCES32:.c=.32.o) src/drivers/error_sound.32.o
+OBJS32 = $(OBJS32_ARCH_O) $(C_SOURCES32:.c=.32.o) src/drivers/error_sound.32.o src/drivers/wallpaper_data.32.o
 
 KERNEL64_BIN = rockos64.bin
 KERNEL32_BIN = rockos32.bin
@@ -115,6 +122,18 @@ src/drivers/error_sound.o: assets/error_48000_stereo_s16le.pcm
 
 src/drivers/error_sound.32.o: assets/error_48000_stereo_s16le.pcm
 	$(ASM32) $(ASMFLAGS) src/drivers/error_sound.S -o $@
+
+$(WALLPAPER_RGB): $(WALLPAPER_PNG) scripts/make_wallpaper.ps1
+	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass \
+		-File scripts/make_wallpaper.ps1 \
+		-InputPath $(WALLPAPER_PNG) \
+		-OutputPath $@ \
+		-Width $(WALLPAPER_W) -Height $(WALLPAPER_H)
+
+src/drivers/wallpaper_data.o: $(WALLPAPER_RGB)
+
+src/drivers/wallpaper_data.32.o: $(WALLPAPER_RGB)
+	$(ASM32) $(ASMFLAGS) src/drivers/wallpaper_data.S -o $@
 
 $(UI_ASSETS): $(UI_FONT) $(UI_FONT_LICENSE) assets/rockos-logo-outlined.png scripts/generate_ui_assets.ps1
 	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass \
@@ -208,6 +227,6 @@ run-installed: $(INSTALL_DISK) $(DATA_DISK)
 		-drive file=$(DATA_DISK),format=raw,if=ide,index=1
 
 clean:
-	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS)
+	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS) $(WALLPAPER_RGB)
 
 .PHONY: all run run-installed clean kernel32

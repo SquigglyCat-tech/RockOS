@@ -1099,6 +1099,224 @@ bool display_draw_rockos_logo(uint32_t x, uint32_t y) {
         ROCKOS_LOGO_HEIGHT, rockos_logo_2bpp, COLOR_WHITE);
 }
 
+/* ---------------------------------------------------------------------- */
+/* Photo wallpaper                                                         */
+/* ---------------------------------------------------------------------- */
+
+/* The cache is screen-sized, tightly packed (stride = wallpaper_width *
+ * bytes per pixel) and already in the framebuffer's native pixel format, so
+ * drawing it is just row copies into the shadow buffer. */
+static uint8_t* wallpaper_cache;
+static size_t wallpaper_cache_pages;
+static const uint8_t* wallpaper_source;
+static uint32_t wallpaper_source_width;
+static uint32_t wallpaper_source_height;
+static uint32_t wallpaper_width;
+static uint32_t wallpaper_height;
+static uint8_t wallpaper_dim;
+
+static uint32_t pack_rgb_pixel(uint32_t red, uint32_t green, uint32_t blue) {
+    if (framebuffer_red_size == 8 && framebuffer_green_size == 8 &&
+        framebuffer_blue_size == 8) {
+        return (red << framebuffer_red_position) |
+            (green << framebuffer_green_position) |
+            (blue << framebuffer_blue_position);
+    }
+    return channel_value((uint8_t)red, framebuffer_red_position,
+            framebuffer_red_size) |
+        channel_value((uint8_t)green, framebuffer_green_position,
+            framebuffer_green_size) |
+        channel_value((uint8_t)blue, framebuffer_blue_position,
+            framebuffer_blue_size);
+}
+
+void display_wallpaper_release(void) {
+    if (wallpaper_cache) {
+        pmm_free(wallpaper_cache, wallpaper_cache_pages);
+    }
+    wallpaper_cache = NULL;
+    wallpaper_cache_pages = 0;
+    wallpaper_source = NULL;
+    wallpaper_source_width = 0;
+    wallpaper_source_height = 0;
+    wallpaper_width = 0;
+    wallpaper_height = 0;
+    wallpaper_dim = 0;
+}
+
+bool display_wallpaper_ready(void) {
+    return wallpaper_cache != NULL;
+}
+
+bool display_wallpaper_prepare(const uint8_t* rgb888, uint32_t src_width,
+    uint32_t src_height, uint32_t dst_width, uint32_t dst_height,
+    uint8_t dim_percent) {
+    if (!framebuffer_active || !framebuffer_shadow || !rgb888 ||
+        src_width < 2 || src_height < 2 ||
+        src_width > 4096 || src_height > 4096 ||
+        dst_width == 0 || dst_height == 0 ||
+        dst_width > framebuffer_width || dst_height > framebuffer_height) {
+        return false;
+    }
+    if (dim_percent == 0 || dim_percent > 100) dim_percent = 100;
+
+    if (wallpaper_cache && wallpaper_source == rgb888 &&
+        wallpaper_source_width == src_width &&
+        wallpaper_source_height == src_height &&
+        wallpaper_width == dst_width && wallpaper_height == dst_height &&
+        wallpaper_dim == dim_percent) {
+        return true;   /* already built for exactly this request */
+    }
+    display_wallpaper_release();
+
+    uint32_t bpp = framebuffer_bytes_per_pixel;
+    size_t cache_bytes = (size_t)dst_width * dst_height * bpp;
+    size_t pages = (cache_bytes + (PMM_PAGE_SIZE - 1)) >> 12;
+    uint8_t* cache = (uint8_t*)pmm_alloc(pages);
+    if (!cache) return false;
+
+    /* "Cover": ONE scale for both axes (source pixels per destination
+     * pixel, 16.16 fixed point), chosen so the image fills the whole area.
+     * The leftover source on the long axis is cropped. */
+    uint32_t step;
+    if (src_width * dst_height >= src_height * dst_width) {
+        step = (src_height << 16) / dst_height;
+    } else {
+        step = (src_width << 16) / dst_width;
+    }
+    if (step == 0) step = 1;
+
+    uint64_t view_w = (uint64_t)step * dst_width;
+    uint64_t view_h = (uint64_t)step * dst_height;
+    uint64_t full_w = (uint64_t)src_width << 16;
+    uint64_t full_h = (uint64_t)src_height << 16;
+    uint32_t spare_x = view_w < full_w ? (uint32_t)(full_w - view_w) : 0;
+    uint32_t spare_y = view_h < full_h ? (uint32_t)(full_h - view_h) : 0;
+    /* Centre sideways. Vertically take most of the crop from the TOP (the
+     * empty storm), so the sea and the beach always stay in view. */
+    uint32_t off_x = spare_x >> 1;
+    uint32_t off_y = (spare_y / 5U) * 4U;
+
+    uint32_t dim = ((uint32_t)dim_percent * 256U) / 100U;   /* 0..256 */
+    size_t src_stride = (size_t)src_width * 3U;
+    uint32_t max_x = src_width - 1U;
+    uint32_t max_y = src_height - 1U;
+    uint32_t half_step = step >> 1;
+
+    for (uint32_t y = 0; y < dst_height; y++) {
+        uint32_t sy = off_y + y * step + half_step;
+        sy = sy >= 0x8000U ? sy - 0x8000U : 0;   /* sample pixel centres */
+        uint32_t iy = sy >> 16;
+        uint32_t fy = (sy >> 8) & 0xFFU;
+        if (iy > max_y) iy = max_y;
+        uint32_t iy1 = iy < max_y ? iy + 1U : max_y;
+        uint32_t weight_top = 256U - fy;
+        const uint8_t* row0 = rgb888 + (size_t)iy * src_stride;
+        const uint8_t* row1 = rgb888 + (size_t)iy1 * src_stride;
+        uint8_t* out = cache + (size_t)y * dst_width * bpp;
+
+        for (uint32_t x = 0; x < dst_width; x++) {
+            uint32_t sx = off_x + x * step + half_step;
+            sx = sx >= 0x8000U ? sx - 0x8000U : 0;
+            uint32_t ix = sx >> 16;
+            uint32_t fx = (sx >> 8) & 0xFFU;
+            if (ix > max_x) ix = max_x;
+            uint32_t ix1 = ix < max_x ? ix + 1U : max_x;
+            uint32_t weight_left = 256U - fx;
+            const uint8_t* p00 = row0 + (size_t)ix * 3U;
+            const uint8_t* p10 = row0 + (size_t)ix1 * 3U;
+            const uint8_t* p01 = row1 + (size_t)ix * 3U;
+            const uint8_t* p11 = row1 + (size_t)ix1 * 3U;
+            uint32_t channel[3];
+            for (uint32_t c = 0; c < 3; c++) {
+                uint32_t top = (uint32_t)p00[c] * weight_left +
+                    (uint32_t)p10[c] * fx;
+                uint32_t bottom = (uint32_t)p01[c] * weight_left +
+                    (uint32_t)p11[c] * fx;
+                uint32_t value = (top * weight_top + bottom * fy) >> 16;
+                channel[c] = (value * dim) >> 8;
+            }
+            uint32_t pixel = pack_rgb_pixel(channel[0], channel[1],
+                channel[2]);
+            for (uint32_t byte = 0; byte < bpp; byte++) {
+                out[byte] = (uint8_t)(pixel >> (byte * 8U));
+            }
+            out += bpp;
+        }
+    }
+
+    wallpaper_cache = cache;
+    wallpaper_cache_pages = pages;
+    wallpaper_source = rgb888;
+    wallpaper_source_width = src_width;
+    wallpaper_source_height = src_height;
+    wallpaper_width = dst_width;
+    wallpaper_height = dst_height;
+    wallpaper_dim = dim_percent;
+    return true;
+}
+
+bool display_draw_wallpaper(uint32_t x, uint32_t y, uint32_t width,
+    uint32_t height) {
+    if (!wallpaper_cache || !framebuffer_active || !framebuffer_shadow ||
+        width == 0 || height == 0 ||
+        x >= wallpaper_width || y >= wallpaper_height) {
+        return false;
+    }
+    if (width > wallpaper_width - x) width = wallpaper_width - x;
+    if (height > wallpaper_height - y) height = wallpaper_height - y;
+
+    size_t bpp = framebuffer_bytes_per_pixel;
+    size_t row_bytes = (size_t)width * bpp;
+    for (uint32_t row = y; row < y + height; row++) {
+        const uint8_t* source = wallpaper_cache +
+            ((size_t)row * wallpaper_width + x) * bpp;
+        uint8_t* destination = framebuffer_shadow +
+            (size_t)row * framebuffer_pitch + (size_t)x * bpp;
+        copy_to_framebuffer((volatile uint8_t*)destination, source,
+            row_bytes);
+    }
+    mark_framebuffer_dirty_rect(x, y, width, height);
+    redraw_pixel_mouse_cursor();
+    return true;
+}
+
+bool display_draw_wallpaper_thumb(uint32_t x, uint32_t y, uint32_t width,
+    uint32_t height) {
+    if (!wallpaper_cache || !framebuffer_active || !framebuffer_shadow ||
+        width == 0 || height == 0 ||
+        x >= framebuffer_width || y >= framebuffer_height ||
+        width > framebuffer_width - x || height > framebuffer_height - y) {
+        return false;
+    }
+    /* Whole width of the cache, but only as much height as the thumbnail's
+     * shape needs (so the picture is not squashed), taken a bit below the
+     * middle so the cloud wall and the sea are both visible. */
+    uint32_t source_height = (wallpaper_width * height) / width;
+    if (source_height > wallpaper_height) source_height = wallpaper_height;
+    if (source_height == 0) source_height = 1;
+    uint32_t source_top = ((wallpaper_height - source_height) / 5U) * 3U;
+    size_t bpp = framebuffer_bytes_per_pixel;
+
+    for (uint32_t row = 0; row < height; row++) {
+        uint32_t sy = source_top + (row * source_height) / height;
+        for (uint32_t column = 0; column < width; column++) {
+            uint32_t sx = (column * wallpaper_width) / width;
+            const uint8_t* source = wallpaper_cache +
+                ((size_t)sy * wallpaper_width + sx) * bpp;
+            uint8_t* destination = framebuffer_shadow +
+                (size_t)(y + row) * framebuffer_pitch +
+                (size_t)(x + column) * bpp;
+            for (size_t byte = 0; byte < bpp; byte++) {
+                destination[byte] = source[byte];
+            }
+        }
+    }
+    mark_framebuffer_dirty_rect(x, y, width, height);
+    redraw_pixel_mouse_cursor();
+    return true;
+}
+
 bool display_draw_text_scaled(uint32_t x, uint32_t y, const char* text,
     uint8_t foreground, uint8_t background, uint8_t scale) {
     return draw_text_scaled(x, y, text, foreground, background, scale);

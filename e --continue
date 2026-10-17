@@ -1,0 +1,29 @@
+[1mdiff --cc src/kernel/shell.c[m
+[1mindex e652d1b,1801431..0000000[m
+[1m--- a/src/kernel/shell.c[m
+[1m+++ b/src/kernel/shell.c[m
+[36m@@@ -403,7 -403,8 +403,12 @@@[m [mstatic void shell_ui_draw_backdrop(cons[m
+      uint32_t width;[m
+      uint32_t height;[m
+      if (!shell_get_graphics_size(&width, &height)) return;[m
+[32m++<<<<<<< HEAD[m
+[32m +    /* The bands cover every pixel; clearing first just repeats the full-screen fill. */[m
+[32m++=======[m
+[32m+     /* The gradient bands below cover the entire framebuffer, so clearing it[m
+[32m+        first just writes every pixel a second time before painting the gradient. */[m
+[32m++>>>>>>> 1fbbce7 (Avoid redundant full-screen clears during installer redraws)[m
+      for (uint32_t y = 0; y < height; y += 32) {[m
+          uint8_t shade = (uint8_t)(34 - (y * 15 / height));[m
+          uint32_t band_height = height - y < 32 ? height - y : 32;[m
+[36m@@@ -966,7 -966,7 +971,11 @@@[m [mstatic void shell_installer_draw_setup([m
+      uint32_t width;[m
+      uint32_t height;[m
+      if (shell_get_graphics_size(&width, &height)) {[m
+[32m++<<<<<<< HEAD[m
+[32m +        /* The gradient bands fill the entire screen, so display_clear() is redundant. */[m
+[32m++=======[m
+[32m+         /* The gradient bands fully cover the screen; avoid a redundant clear. */[m
+[32m++>>>>>>> 1fbbce7 (Avoid redundant full-screen clears during installer redraws)[m
+          for (uint32_t y = 0; y < height; y += 32) {[m
+              uint8_t shade = (uint8_t)(34 - (y * 15 / height));[m
+              uint32_t band_height = height - y < 32 ? height - y : 32;[m

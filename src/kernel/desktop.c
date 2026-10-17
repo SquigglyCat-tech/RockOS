@@ -40,6 +40,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Raw RGB888 wallpaper pixels, embedded by src/drivers/wallpaper_data.S. */
+extern const uint8_t rockos_wallpaper_start[];
+extern const uint8_t rockos_wallpaper_end[];
+
 /* ====================================================================== */
 /* ======================== DESKTOP ADAPTER ============================= */
 /* ====================================================================== */
@@ -120,7 +124,15 @@ static void adapter_on_exit(void)
 #define SET_STEP        162
 
 #define THEME_COUNT     3
-#define WALL_STYLES     4
+#define WALL_STYLES     5
+#define WALL_STORM      4     /* the photo wallpaper (last style) */
+
+/* Photo wallpaper master size (assets/wallpaper.rgb; keep in sync with
+ * WALLPAPER_W/H in the Makefile) and how much it is darkened so the white
+ * desktop-icon labels stay readable on the light patches of sky. */
+#define WALL_SRC_W      960U
+#define WALL_SRC_H      640U
+#define WALL_DIM_PERCENT 80
 
 enum {
     W_COMPUTER = 0, W_TERM, W_SYSINFO, W_DISPLAY, W_ABOUT, W_NETWORK,
@@ -246,12 +258,12 @@ static const theme_t themes[THEME_COUNT] = {
 };
 
 static const char* const wall_names[WALL_STYLES] = {
-    "RockOS Gradient", "Dark RockOS", "Solid", "Classic Gradient"
+    "RockOS Gradient", "Dark RockOS", "Solid", "Classic Gradient", "Storm"
 };
 
 /* These survive closing and re-opening the desktop. */
 static int theme_index = 0;
-static int wall_style = 0;
+static int wall_style = WALL_STORM;
 
 #define TH (themes[theme_index])
 
@@ -345,6 +357,9 @@ static const int32_t fm_menu_widths[6] = { 50, 50, 54, 94, 62, 56 };
 
 static bool active;
 static int32_t sw, sh, tb_y;
+
+/* True when the photo wallpaper was built for the current screen size. */
+static bool storm_ready;
 
 /* damage = what must be repainted, clip = what we may paint right now */
 static bool dmg_on;
@@ -908,6 +923,8 @@ static int32_t task_btn_x(int k)
 
 static bool logo_visible(void)
 {
+    /* The photo wallpaper stands on its own: no logo on top of it. */
+    if (wall_style == WALL_STORM && storm_ready) return false;
     return sw >= (int32_t)DISPLAY_ROCKOS_LOGO_WIDTH + 40 &&
         tb_y >= (int32_t)DISPLAY_ROCKOS_LOGO_HEIGHT;
 }
@@ -1677,8 +1694,8 @@ static region_t hit_test(int32_t x, int32_t y)
                     }
                 }
                 for (k = 0; k < WALL_STYLES; k++) {
-                    int32_t wall_x = SET_GX + 12 + (k % 2) * SET_STEP;
-                    int32_t wall_y = SET_G2Y + 26 + (k / 2) * WALL_ROW_STEP;
+                    int32_t wall_x = SET_GX + 12 + (k % 3) * SET_STEP;
+                    int32_t wall_y = SET_G2Y + 26 + (k / 3) * WALL_ROW_STEP;
                     if (inside(lx, ly, wall_x, wall_y, SET_CARD_W, SET_CARD_H)) {
                         r.kind = R_SET_WALL;
                         r.sub = (int8_t)k;
@@ -1939,9 +1956,29 @@ static void draw_icon_dim(int type, int32_t x, int32_t y, int32_t size,
 /* ============================== Wallpaper ============================= */
 /* ====================================================================== */
 
+static bool storm_prepare(void)
+{
+    size_t bytes = (size_t)(rockos_wallpaper_end - rockos_wallpaper_start);
+    if (bytes != (size_t)WALL_SRC_W * WALL_SRC_H * 3U) return false;
+    return display_wallpaper_prepare(rockos_wallpaper_start, WALL_SRC_W,
+        WALL_SRC_H, (uint32_t)sw, (uint32_t)tb_y, WALL_DIM_PERCENT);
+}
+
 static void draw_wallpaper(void)
 {
     int32_t y;
+
+    if (wall_style == WALL_STORM && storm_ready) {
+        /* Photo: copy just the damaged part of the pre-scaled cache. */
+        int32_t x0 = clip.x0, y0 = clip.y0, x1 = clip.x1, y1 = clip.y1;
+        if (x1 > sw) x1 = sw;
+        if (y1 > tb_y) y1 = tb_y;
+        if (x1 > x0 && y1 > y0) {
+            display_draw_wallpaper((uint32_t)x0, (uint32_t)y0,
+                (uint32_t)(x1 - x0), (uint32_t)(y1 - y0));
+        }
+        return;
+    }
 
     if (wall_style == 2) {
         /* Plain colour, using the selected desktop colour scheme. */
@@ -2405,6 +2442,11 @@ static void draw_card(int32_t x, int32_t y, const theme_t* t, bool selected,
         }
         /* A small RockOS mark previews the centred logo on the wallpaper. */
         draw_icon(IC_ABOUT, x + SET_CARD_W / 2 - 14, y + 10, 28);
+    } else if (style == WALL_STORM) {
+        if (!display_draw_wallpaper_thumb((uint32_t)x, (uint32_t)y,
+                SET_CARD_W, 52)) {
+            rect(x, y, SET_CARD_W, 52, 0x1E2A44);
+        }
     }
     bevel_sunken(x, y, SET_CARD_W, 52);
     text(x + 2, y + 52, label, TH.t_face);
@@ -2424,8 +2466,8 @@ static void draw_display(int w, int32_t wx, int32_t wy)
     }
     groupbox(wx + SET_GX, wy + SET_G2Y, cw - 20, SET_WALL_GH, "Wallpaper");
     for (i = 0; i < WALL_STYLES; i++) {
-        int32_t card_x = wx + SET_GX + 12 + (i % 2) * SET_STEP;
-        int32_t card_y = wy + SET_G2Y + 26 + (i / 2) * WALL_ROW_STEP;
+        int32_t card_x = wx + SET_GX + 12 + (i % 3) * SET_STEP;
+        int32_t card_y = wy + SET_G2Y + 26 + (i / 3) * WALL_ROW_STEP;
         draw_card(card_x, card_y, &TH, i == wall_style, wall_names[i], i);
     }
     text(cx + 14, wy + hh - FRAME - 60,
@@ -2766,7 +2808,8 @@ static void on_press(int32_t x, int32_t y)
         break;
     case R_SET_WALL:
         win_focus(r.idx);
-        wall_style = r.sub;
+        /* Storm needs the photo cache; ignore the click if it failed to build. */
+        if (r.sub != WALL_STORM || storm_ready) wall_style = r.sub;
         break;
     case R_OK:
         win_close(r.idx);
@@ -2810,6 +2853,12 @@ void desktop_start(void)
     sw = (int32_t)w;
     sh = (int32_t)h;
     tb_y = sh - TASKBAR_H;
+
+    /* Scale the photo wallpaper to this screen once (hourglass meanwhile). */
+    display_set_mouse_busy(true);
+    storm_ready = storm_prepare();
+    display_set_mouse_busy(false);
+    if (!storm_ready && wall_style == WALL_STORM) wall_style = 0;
 
     for (i = 0; i < W_TYPES; i++) {
         wins[i].open = false;

@@ -49,6 +49,25 @@ bool display_draw_text_scaled(uint32_t x, uint32_t y, const char* text,
 bool display_draw_mask_bitmap(uint32_t x, uint32_t y, uint32_t width,
     uint32_t height, const uint8_t* coverage_2bpp, uint8_t foreground);
 bool display_draw_rockos_logo(uint32_t x, uint32_t y);
+
+/* Photo wallpaper. display_wallpaper_prepare() scales an RGB888 image (rows
+ * top to bottom, 3 bytes per pixel) so it COVERS a dst_width x dst_height
+ * area (centred, cropped, bilinear), darkens it to dim_percent (1-100) and
+ * caches the result in the framebuffer's native pixel format. Call it once;
+ * it returns true immediately if nothing changed. The cache is allocated
+ * from the PMM; returns false (and draws nothing) if that fails.
+ * display_draw_wallpaper() then copies a rectangle of the cache to the same
+ * screen coordinates (fast row copies). The thumb variant draws a small
+ * nearest-neighbour preview of the whole cache. */
+bool display_wallpaper_prepare(const uint8_t* rgb888, uint32_t src_width,
+    uint32_t src_height, uint32_t dst_width, uint32_t dst_height,
+    uint8_t dim_percent);
+bool display_wallpaper_ready(void);
+void display_wallpaper_release(void);
+bool display_draw_wallpaper(uint32_t x, uint32_t y, uint32_t width,
+    uint32_t height);
+bool display_draw_wallpaper_thumb(uint32_t x, uint32_t y, uint32_t width,
+    uint32_t height);
 bool display_fill_triangle(uint32_t x0, uint32_t y0, uint32_t x1,
     uint32_t y1, uint32_t x2, uint32_t y2, uint8_t color);
 void display_set_mouse_busy(bool busy);
