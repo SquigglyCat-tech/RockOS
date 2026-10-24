@@ -10,6 +10,8 @@
 #include "mouse.h"
 #include "timer.h"
 #include "display.h"
+#include "serial.h"
+#include "repair.h"
 #include "ring3.h"
 
 #define KERNEL_CS     0x08   /* must be the code segment of the GDT your boot code loads */
@@ -145,86 +147,205 @@ static void put_line(const char* label, uint64_t v) {
     display_putchar('\n');
 }
 
-static void draw_hex_field(uint32_t x, uint32_t y, const char* label,
-    uint64_t value) {
-    static const char digits[] = "0123456789ABCDEF";
-    char text[48];
-    size_t length = 0;
-    while (*label && length < sizeof(text) - 19) {
-        text[length++] = *label++;
+/* ---------- RockOS error screen ("!!!" design) ---------- */
+
+/* The layout was designed on a 1144x641 canvas; positions/sizes are scaled by
+ * screen height. Text uses the Selawik UI font at its native 20px (bold is
+ * faked with a 1px double-strike), so it is not scaled. */
+#define ERR_DESIGN_HEIGHT 641U
+#define ERR_GRAY   85U
+#define ERR_WHITE  255U
+
+static uint32_t err_scale(uint32_t value, uint32_t height) {
+    return (value * height) / ERR_DESIGN_HEIGHT;
+}
+
+static uint32_t err_isqrt(uint32_t n) {
+    uint32_t r = 0;
+    while ((r + 1U) * (r + 1U) <= n) {
+        r++;
     }
-    text[length++] = '0';
-    text[length++] = 'x';
-    for (int shift = 60; shift >= 0; shift -= 4) {
-        text[length++] = digits[(value >> shift) & 0x0F];
+    return r;
+}
+
+/* Tapered "!" bar: top_w wide at the top edge, bottom_w at the bottom. */
+static void err_draw_bar(uint32_t cx, uint32_t y, uint32_t h,
+    uint32_t top_w, uint32_t bottom_w, uint8_t c) {
+    if (h == 0 || bottom_w > top_w) {
+        return;
     }
-    text[length] = '\0';
-    display_draw_text_ui(x, y, text, COLOR_LIGHT_GRAY);
+    for (uint32_t row = 0; row < h; row++) {
+        uint32_t w = top_w - ((top_w - bottom_w) * row) / h;
+        if (w == 0 || w / 2 > cx) {
+            continue;
+        }
+        display_fill_rect_rgb(cx - w / 2, y + row, w, 1, c, c, c);
+    }
+}
+
+/* Filled circle with a 1px half-alpha fringe so the edge isn't jagged. */
+static void err_draw_dot(uint32_t cx, uint32_t cy, uint32_t r, uint8_t c) {
+    if (r < 2 || r > cx || r > cy) {
+        return;
+    }
+    for (int32_t dy = -(int32_t)r; dy <= (int32_t)r; dy++) {
+        uint32_t dy2 = (uint32_t)(dy * dy);
+        uint32_t row_y = (uint32_t)((int32_t)cy + dy);
+        uint32_t outer = err_isqrt(r * r - dy2);
+        uint32_t inner_limit = (r - 1U) * (r - 1U);
+        if (dy2 <= inner_limit) {
+            uint32_t inner = err_isqrt(inner_limit - dy2);
+            display_fill_rect_rgb(cx - inner, row_y, inner * 2U + 1U, 1,
+                c, c, c);
+            if (outer > inner) {
+                uint32_t fringe = outer - inner;
+                display_blend_rect_rgb(cx - outer, row_y, fringe, 1,
+                    c, c, c, 128);
+                display_blend_rect_rgb(cx + inner + 1U, row_y, fringe, 1,
+                    c, c, c, 128);
+            }
+        } else {
+            display_blend_rect_rgb(cx - outer, row_y, outer * 2U + 1U, 1,
+                c, c, c, 150);
+        }
+    }
+}
+
+static void err_draw_exclamation(uint32_t cx, uint32_t height, uint8_t c) {
+    err_draw_bar(cx, err_scale(122, height), err_scale(96, height),
+        err_scale(34, height), err_scale(17, height), c);
+    err_draw_dot(cx, err_scale(245, height), err_scale(17, height), c);
+}
+
+static void err_draw_centered_bold(uint32_t width, uint32_t y,
+    const char* text, uint8_t color) {
+    uint32_t w = display_measure_text_ui(text);
+    uint32_t x = w < width ? (width - w) / 2U : 0;
+    display_draw_text_ui(x, y, text, color);
+    display_draw_text_ui(x + 1U, y, text, color);
+}
+
+/* Windows-style stop code for the footer. Unknown vectors fall back to the
+ * generic one from the design. */
+static const char* err_stop_code(uint64_t vector) {
+    switch ((uint32_t)vector) {
+        case 0:  return "DIVIDE_ERROR_FAULT";
+        case 1:  return "DEBUG_EXCEPTION";
+        case 2:  return "NMI_HARDWARE_FAULT";
+        case 3:  return "BREAKPOINT_EXCEPTION";
+        case 4:  return "OVERFLOW_EXCEPTION";
+        case 5:  return "BOUND_RANGE_EXCEEDED";
+        case 6:  return "INVALID_OPCODE_FAULT";
+        case 7:  return "DEVICE_NOT_AVAILABLE";
+        case 8:  return "DOUBLE_FAULT";
+        case 10: return "INVALID_TSS";
+        case 11: return "SEGMENT_NOT_PRESENT";
+        case 12: return "STACK_SEGMENT_FAULT";
+        case 13: return "GENERAL_PROTECTION_FAULT";
+        case 14: return "PAGE_FAULT_IN_KERNEL";
+        case 16: return "FLOATING_POINT_EXCEPTION";
+        case 17: return "ALIGNMENT_CHECK_FAULT";
+        case 18: return "MACHINE_CHECK_EXCEPTION";
+        case 19: return "SIMD_EXCEPTION";
+        case 20: return "VIRTUALIZATION_EXCEPTION";
+        case 21: return "CONTROL_PROTECTION_FAULT";
+        default: return "GENERAL_EXCEPTION_FAULT";
+    }
 }
 
 static bool draw_graphical_panic(const interrupt_frame_t* f) {
     uint32_t width;
     uint32_t height;
     if (!display_get_framebuffer_size(&width, &height) ||
-        width < 600 || height < 520) {
+        width < 640 || height < 400) {
         return false;
     }
 
     display_fill_rect_rgb(0, 0, width, height, 0, 0, 0);
-    display_fill_rect_rgb(0, 0, width, 6, 220, 48, 58);
-    display_fill_rect_rgb(32, 32, width - 64, height - 64,
-        17, 18, 22);
-    display_fill_rect_rgb(32, 32, 6, height - 64, 220, 48, 58);
-    display_draw_text_ui(56, 52, "ROCKOS  /  KERNEL PANIC",
-        COLOR_LIGHT_RED);
-    display_draw_text_ui(56, 88, "SYSTEM HALTED", COLOR_WHITE);
-    display_draw_text_ui(56, 122,
-        "A fatal CPU exception stopped execution.", COLOR_LIGHT_GRAY);
 
-    display_fill_rect_rgb(56, 164, width - 112, 64, 35, 20, 23);
-    display_draw_text_ui(72, 186, "EXCEPTION", COLOR_LIGHT_RED);
-    display_draw_text_ui(190, 186,
-        f->vector < EXCEPTION_NAME_COUNT
-            ? exception_names[f->vector] : "Reserved",
+    /* !!!  - outer two dim, middle one bright */
+    uint32_t center = width / 2U;
+    uint32_t pitch = err_scale(52, height);
+    err_draw_exclamation(center - pitch, height, ERR_GRAY);
+    err_draw_exclamation(center + pitch, height, ERR_GRAY);
+    err_draw_exclamation(center, height, ERR_WHITE);
+
+    uint32_t text_y = err_scale(298, height);
+    err_draw_centered_bold(width, text_y,
+        "A problem was detected and we stopped your computer to prevent "
+        "any further damage.", COLOR_WHITE);
+    err_draw_centered_bold(width, text_y + 29U,
+        "Please wait while we repair and diagnose your computer.",
         COLOR_WHITE);
 
-    uint32_t right_x = width / 2;
-    uint32_t y = 260;
-    draw_hex_field(56, y, "VECTOR  ", f->vector);
-    draw_hex_field(right_x, y, "ERROR CODE  ", f->error_code);
-    y += 32;
-    draw_hex_field(56, y, "RIP  ", f->rip);
-    draw_hex_field(right_x, y, "CS  ", f->cs);
-    y += 32;
-    draw_hex_field(56, y, "RFLAGS  ", f->rflags);
-    draw_hex_field(right_x, y, "RSP  ", FRAME_STACK_POINTER(f));
-    y += 32;
-    draw_hex_field(56, y, "RAX  ", f->rax);
-    draw_hex_field(right_x, y, "RBX  ", f->rbx);
-    y += 32;
-    draw_hex_field(56, y, "RCX  ", f->rcx);
-    draw_hex_field(right_x, y, "RDX  ", f->rdx);
-    if (f->vector == 14 && y + 32 < height - 80) {
-        uintptr_t cr2;
-        asm volatile ("mov %%cr2, %0" : "=r"(cr2));
-        y += 32;
-        draw_hex_field(56, y, "CR2  ", cr2);
-    }
+    /* dim logo + stop code pinned to the bottom */
+    display_draw_rockos_logo_half((width - DISPLAY_ROCKOS_LOGO_WIDTH / 2U) / 2U,
+        height - 140U, COLOR_DARK_GRAY);
 
-    display_fill_rect_rgb(56, height - 92, width - 112, 1,
-        70, 72, 78);
-    display_draw_text_ui(56, height - 72,
-        "Restart the virtual machine to continue.", COLOR_LIGHT_GRAY);
+    char footer[64];
+    size_t length = 0;
+    const char* prefix = "Error code: ";
+    while (*prefix) {
+        footer[length++] = *prefix++;
+    }
+    const char* code = err_stop_code(f->vector);
+    while (*code && length < sizeof(footer) - 1U) {
+        footer[length++] = *code++;
+    }
+    footer[length] = '\0';
+    uint32_t footer_width = display_measure_text_ui(footer);
+    display_draw_text_ui(footer_width < width ? (width - footer_width) / 2U : 0,
+        height - 70U, footer, COLOR_WHITE);
+
     display_present();
     return true;
 }
 
+/* The screen is deliberately clean, so the register dump goes to COM1
+ * (QEMU: -serial stdio / -serial file:serial.log). */
+static void panic_serial_dump(const interrupt_frame_t* f) {
+    serial_write_string("\n[panic] ");
+    serial_write_string(f->vector < EXCEPTION_NAME_COUNT
+        ? exception_names[f->vector] : "Reserved");
+    serial_write_string(" (");
+    serial_write_string(err_stop_code(f->vector));
+    serial_write_string(")\n[panic] vector=");
+    serial_write_hex(f->vector);
+    serial_write_string(" error=");
+    serial_write_hex(f->error_code);
+    serial_write_string("\n[panic] rip=");
+    serial_write_hex(f->rip);
+    serial_write_string(" cs=");
+    serial_write_hex(f->cs);
+    serial_write_string(" flags=");
+    serial_write_hex(f->rflags);
+    serial_write_string(" sp=");
+    serial_write_hex(FRAME_STACK_POINTER(f));
+    serial_write_string("\n[panic] ax=");
+    serial_write_hex(f->rax);
+    serial_write_string(" bx=");
+    serial_write_hex(f->rbx);
+    serial_write_string(" cx=");
+    serial_write_hex(f->rcx);
+    serial_write_string(" dx=");
+    serial_write_hex(f->rdx);
+    if (f->vector == 14) {
+        uintptr_t cr2;
+        asm volatile ("mov %%cr2, %0" : "=r"(cr2));
+        serial_write_string(" cr2=");
+        serial_write_hex(cr2);
+    }
+    serial_write_string("\n");
+}
+
 static void exception_panic(const interrupt_frame_t* f) {
     asm volatile ("cli");
+    panic_serial_dump(f);
 
     display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     display_clear();
-    if (!draw_graphical_panic(f)) {
+    bool graphical = draw_graphical_panic(f);
+    if (!graphical) {
         display_set_color(COLOR_LIGHT_RED, COLOR_BLACK);
         display_puts("!!! ROCKOS / SYSTEM HALTED !!!\n\n");
         display_puts("A fatal CPU exception stopped execution.\n");
@@ -260,6 +381,33 @@ static void exception_panic(const interrupt_frame_t* f) {
         display_puts("Restart the virtual machine to continue.\n");
     }
     display_present();
+
+    if (graphical) {
+        /* Windows-style: "!!!" screen first, then the repair screen. It
+         * polls the keyboard/mouse itself and never returns. */
+        repair_crash_info_t info;
+        info.vector = f->vector;
+        info.error_code = f->error_code;
+        info.rip = f->rip;
+        info.cs = f->cs;
+        info.rflags = f->rflags;
+        info.rsp = FRAME_STACK_POINTER(f);
+        info.rax = f->rax;
+        info.rbx = f->rbx;
+        info.rcx = f->rcx;
+        info.rdx = f->rdx;
+        info.cr2 = 0;
+        info.has_cr2 = (f->vector == 14);
+        if (info.has_cr2) {
+            uintptr_t cr2;
+            asm volatile ("mov %%cr2, %0" : "=r"(cr2));
+            info.cr2 = cr2;
+        }
+        info.stop_code = err_stop_code(f->vector);
+        info.name = f->vector < EXCEPTION_NAME_COUNT
+            ? exception_names[f->vector] : "Reserved";
+        repair_screen_run(&info);
+    }
 
     for (;;) {
         asm volatile ("cli; hlt");

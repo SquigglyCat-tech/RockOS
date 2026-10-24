@@ -1,200 +1,267 @@
+/* RockOS boot animation - "Assemble".
+ *
+ * The five facets of the RockOS rock fly in and lock together, the letters
+ * rise in one by one, and the facets then fill up as the boot progress
+ * (5 facets = 5 stages). Pieces come from boot_logo_data.h, which is
+ * generated from assets/rockos-logo-outlined.png by scripts/make_boot_logo.py.
+ *
+ * Integer-only (no floats, no 64-bit division) so it builds for both the
+ * 64-bit and the 32-bit kernel. Everything is drawn with display_fill_rect_rgb
+ * using horizontal runs, so it stays cheap on low-end machines.
+ * The PIT runs at 100 Hz, so one tick = 10 ms. */
 #include "boot_animation.h"
 
+#include "boot_logo_data.h"
 #include "display.h"
 #include "timer.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
-#define BOOT_BG_R 0U
-#define BOOT_BG_G 0U
-#define BOOT_BG_B 0U
-#define BOOT_DARK_R 24U
-#define BOOT_DARK_G 24U
-#define BOOT_DARK_B 24U
-#define BOOT_MID_R 112U
-#define BOOT_MID_G 112U
-#define BOOT_MID_B 112U
-#define BOOT_LIGHT_R 224U
-#define BOOT_LIGHT_G 224U
-#define BOOT_LIGHT_B 224U
-#define BOOT_WHITE_R 255U
-#define BOOT_WHITE_G 255U
-#define BOOT_WHITE_B 255U
+#define BG 8                    /* background grey level */
+#define FG 205                  /* logo grey level */
+#define DIM 40                  /* unfilled facet brightness (of 256) */
+#define TRACK 30                /* progress track level */
+#define NOGLINT 0x7FFFFFFF
 
-/* PIT is configured for 100 Hz before this animation is called. */
-#define BOOT_ASSEMBLY_FRAMES 72U
-#define BOOT_FRAME_TICKS 2ULL
-#define BOOT_LOADING_TICKS 520ULL
-#define BOOT_STATUS_TICKS 160ULL
+#define FRAME_TICKS 2U
+#define T_LETTERS 105           /* first letter starts rising */
+#define T_UI 160                /* progress bar fades in */
+#define T_PROGRESS 150          /* timed progress starts */
+#define PROGRESS_TICKS 420U     /* ...and takes this long (no external progress) */
+#define T_GLINT1 200
+#define GLINT_TICKS 120
+#define FADE_TICKS 40U
+#define BAR_W 280
+#define BAR_H 3
 
-static void boot_wait_ticks(uint64_t duration) {
-    uint64_t start = timer_get_ticks();
-    while (timer_get_ticks() - start < duration) {
+static uint32_t g_external_permille = 0xFFFFFFFFU;
+
+/* Optional: call during boot (0..100) to drive the bar from real progress
+ * instead of the built-in timer. */
+void boot_animation_set_progress(uint32_t percent) {
+    g_external_permille = percent >= 100U ? 1000U : percent * 10U;
+}
+
+static int32_t clampi(int32_t v, int32_t lo, int32_t hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+/* 0..1024 -> 0..1024 */
+static int32_t ease_out_cubic(int32_t t) {
+    int32_t u = 1024 - t;
+    return 1024 - ((u * u) / 1024) * u / 1024;
+}
+
+/* Overshoots slightly past 1024 and settles (the "snap" into place). */
+static int32_t ease_out_back(int32_t t) {
+    int32_t u = t - 1024;
+    int32_t u2 = (u * u) / 1024;
+    int32_t u3 = (u2 * u) / 1024;
+    return 1024 + (26 * u3) / 10 + (16 * u2) / 10;
+}
+
+static void wait_until(uint64_t start, uint32_t ticks) {
+    while ((uint32_t)(timer_get_ticks() - start) < ticks) {
         asm volatile("pause");
     }
 }
 
-static void boot_background(uint32_t width, uint32_t height) {
-    display_fill_rect_rgb(0, 0, width, height,
-        BOOT_BG_R, BOOT_BG_G, BOOT_BG_B);
-}
+typedef struct {
+    int32_t ga;       /* global brightness 0..256 (fade-out) */
+    int32_t glint;    /* glint sweep position, or NOGLINT */
+    uint32_t sw, sh;  /* screen size */
+} fx_t;
 
-static void boot_draw_piece(uint32_t x, uint32_t y, uint32_t size,
-    uint8_t red, uint8_t green, uint8_t blue) {
-    display_fill_rect_rgb(x, y, size, size, red, green, blue);
-    if (size > 5U) {
-        display_fill_rect_rgb(x + 3U, y + 3U, size - 6U, size - 6U,
-            BOOT_DARK_R, BOOT_DARK_G, BOOT_DARK_B);
+/* Draw one alpha mask at (px, py). fill < 0: plain piece (letters).
+ * fill 0..1000: facet whose bottom `fill`/1000 is lit with a soft edge.
+ * ea 0..256: fade-in. (lx, ly): resting position inside the logo (for glint). */
+static void draw_part(const blogo_part_t* p, int32_t px, int32_t py,
+    int32_t lx, int32_t ly, int32_t fill, int32_t ea, const fx_t* fx) {
+    const int32_t w = p->w, h = p->h;
+    const int32_t soft = h / 5 > 0 ? h / 5 : 1;
+    const int32_t edge = fill < 0 ? 0 : ((1000 - fill) * (h + soft)) / 1000;
+
+    for (int32_t r = 0; r < h; r++) {
+        const int32_t y = py + r;
+        if (y < 0 || y >= (int32_t)fx->sh) continue;
+        int32_t k = 256;
+        if (fill >= 0) {
+            int32_t ramp = clampi(((r - edge + soft) * 256) / soft, 0, 256);
+            k = DIM + (((256 - DIM) * ramp) >> 8);
+        }
+        k = (k * ea) >> 8;
+        if (k <= 0) continue;
+
+        const uint8_t* row = p->a + r * w;
+        int32_t prev = BG, run = 0;
+        for (int32_t c = 0; c <= w; c++) {
+            int32_t l = BG;
+            if (c < w && row[c]) {
+                const int32_t a = row[c];
+                l = BG + (((FG - BG) * a * k) >> 16);
+                if (fx->glint != NOGLINT) {
+                    int32_t d = (lx + c) + (ly + r) / 3 - fx->glint;
+                    if (d < 0) d = -d;
+                    const int32_t gw = BLOGO_W / 6;
+                    if (d < gw) {
+                        int32_t amt = ((gw - d) * 256) / gw;
+                        l += ((((255 - l) * amt * 230) >> 16) * a) / 255;
+                    }
+                }
+                if (fx->ga < 256) l = BG + (((l - BG) * fx->ga) >> 8);
+            }
+            if (c == w || l != prev) {
+                if (prev > BG && c > run) {
+                    int32_t x0 = px + run, x1 = px + c;
+                    if (x0 < 0) x0 = 0;
+                    if (x1 > (int32_t)fx->sw) x1 = (int32_t)fx->sw;
+                    if (x1 > x0) {
+                        display_fill_rect_rgb((uint32_t)x0, (uint32_t)y,
+                            (uint32_t)(x1 - x0), 1U,
+                            (uint8_t)prev, (uint8_t)prev, (uint8_t)prev);
+                    }
+                }
+                prev = l;
+                run = c;
+            }
+        }
     }
 }
 
-/* A restrained grayscale marquee, like a firmware/OS startup indicator. */
-static void boot_draw_loading(uint32_t width, uint32_t height,
-    uint64_t phase) {
-    const uint32_t bar_width = width < 300U ? width - 32U : 268U;
-    const uint32_t bar_height = 5U;
-    const uint32_t x = (width - bar_width) / 2U;
-    const uint32_t y = height / 2U + 154U;
-    const uint32_t segment_width = bar_width / 4U;
-    const uint32_t travel = bar_width + segment_width;
-    const uint32_t head = (uint32_t)(phase % travel);
-    const uint32_t left = head > segment_width ? head - segment_width : 0U;
-    const uint32_t right = head < bar_width ? head : bar_width;
-    const uint32_t fill_start = left < bar_width ? left : bar_width;
-    const uint32_t fill_end = right > fill_start ? right : fill_start;
-
-    display_fill_rect_rgb(x, y, bar_width, bar_height,
-        BOOT_DARK_R, BOOT_DARK_G, BOOT_DARK_B);
-    if (fill_end > fill_start) {
-        display_fill_rect_rgb(x + fill_start, y,
-            fill_end - fill_start, bar_height,
-            BOOT_LIGHT_R, BOOT_LIGHT_G, BOOT_LIGHT_B);
-    }
-    /* A narrow highlight gives the moving segment a crisp pixel edge. */
-    if (fill_end > fill_start) {
-        display_fill_rect_rgb(x + fill_end - 1U, y, 1U, bar_height,
-            BOOT_WHITE_R, BOOT_WHITE_G, BOOT_WHITE_B);
-    }
+static void draw_number(char* out, int32_t v) {   /* "NN%" */
+    int n = 0;
+    if (v >= 100) out[n++] = (char)('0' + v / 100);
+    if (v >= 10) out[n++] = (char)('0' + (v / 10) % 10);
+    out[n++] = (char)('0' + v % 10);
+    out[n++] = '%';
+    out[n] = '\0';
 }
 
-static void boot_draw_status(uint32_t width, uint32_t y, uint32_t stage) {
-    static const char* const messages[] = {
-        "Starting RockOS",
-        "Preparing system services",
-        "Initializing user interface",
-        "Almost ready"
-    };
-    const char* message = messages[stage % 4U];
-    /* UI text is fixed-width, so center by its character count. */
-    uint32_t length = 0;
-    while (message[length] != '\0') length++;
-    uint32_t text_width = length * 8U;
-    uint32_t x = width > text_width ? (width - text_width) / 2U : 0U;
-    display_fill_rect_rgb(0, y, width, DISPLAY_UI_TEXT_HEIGHT,
-        BOOT_BG_R, BOOT_BG_G, BOOT_BG_B);
-    display_draw_text_ui(x, y, message, COLOR_LIGHT_GRAY);
+static int32_t mix(int32_t level, int32_t a256) {
+    return BG + (((level - BG) * a256) >> 8);
 }
 
 void boot_animation_run(void) {
-    uint32_t width;
-    uint32_t height;
-    if (!display_get_framebuffer_size(&width, &height) ||
-        width < 320U || height < 240U) {
+    uint32_t sw, sh;
+    if (!display_get_framebuffer_size(&sw, &sh) ||
+        sw < BLOGO_W + 80U || sh < 300U) {
         return;
     }
 
-    const uint32_t piece_size = 28U;
-    const int32_t center_x = (int32_t)(width / 2U);
-    const int32_t center_y = (int32_t)(height / 2U) - 70;
-    const int32_t spread_x = (int32_t)(width / 2U) + 24;
-    const int32_t spread_y = (int32_t)(height / 2U) + 24;
+    static const char* const stages[] = {
+        "Starting kernel", "Setting up memory", "Mounting RockFS",
+        "Loading drivers", "Preparing desktop"
+    };
+    /* Facet -> boot stage, and the direction each one flies in from (x10). */
+    static const int32_t order[5] = {3, 0, 1, 2, 4};
+    static const int32_t dirx[5] = {-10, -9, 1, 10, 3};
+    static const int32_t diry[5] = {5, -8, -10, 1, 10};
 
-    /* Begin with a clean black screen; only small regions change per frame. */
-    boot_background(width, height);
+    const int32_t ox = (int32_t)(sw - BLOGO_W) / 2;
+    const int32_t oy = (int32_t)sh / 2 - BLOGO_H / 2 - 30;
+    const int32_t bar_x = (int32_t)(sw - BAR_W) / 2;
+    const int32_t bar_y = oy + BLOGO_H + 46;
+
+    display_fill_rect_rgb(0, 0, sw, sh, BG, BG, BG);
     display_present();
-    boot_wait_ticks(35ULL);
-
-    uint32_t old_x[4] = {0, 0, 0, 0};
-    uint32_t old_y[4] = {0, 0, 0, 0};
-    bool old_visible[4] = {false, false, false, false};
-
-    /* Four grayscale fragments glide in and lock together. */
-    for (uint32_t frame = 0; frame <= BOOT_ASSEMBLY_FRAMES; frame++) {
-        uint32_t progress = frame * 100U / BOOT_ASSEMBLY_FRAMES;
-        uint32_t inverse = 100U - progress;
-        /* Ease out: fragments arrive quickly, then settle cleanly. */
-        uint32_t eased_inverse = (inverse * inverse) / 100U;
-        int32_t offset_x = (spread_x * (int32_t)eased_inverse) / 100;
-        int32_t offset_y = (spread_y * (int32_t)eased_inverse) / 100;
-        int32_t positions_x[4] = {
-            center_x - offset_x, center_x + offset_x,
-            center_x - offset_x, center_x + offset_x
-        };
-        int32_t positions_y[4] = {
-            center_y - offset_y, center_y - offset_y,
-            center_y + offset_y, center_y + offset_y
-        };
-        const uint8_t shades[4] = {192U, 128U, 160U, 255U};
-
-        for (uint32_t piece = 0; piece < 4U; piece++) {
-            if (old_visible[piece]) {
-                display_fill_rect_rgb(old_x[piece], old_y[piece],
-                    piece_size, piece_size, BOOT_BG_R, BOOT_BG_G, BOOT_BG_B);
-            }
-        }
-
-        for (uint32_t piece = 0; piece < 4U; piece++) {
-            int32_t px = positions_x[piece];
-            int32_t py = positions_y[piece];
-            old_visible[piece] = px >= 0 && py >= 0 &&
-                (uint32_t)px + piece_size < width &&
-                (uint32_t)py + piece_size < height;
-            if (old_visible[piece]) {
-                old_x[piece] = (uint32_t)px;
-                old_y[piece] = (uint32_t)py;
-                boot_draw_piece(old_x[piece], old_y[piece], piece_size,
-                    shades[piece], shades[piece], shades[piece]);
-            }
-        }
-        display_present();
-        boot_wait_ticks(BOOT_FRAME_TICKS);
-    }
-
-    /* Hold the assembled logo briefly before the longer startup phase. */
-    boot_background(width, height);
-    uint32_t logo_x = width > DISPLAY_ROCKOS_LOGO_WIDTH
-        ? (width - DISPLAY_ROCKOS_LOGO_WIDTH) / 2U : 0U;
-    /* Keep the logo/tagline group visually centered at common resolutions. */
-    uint32_t logo_y = height / 2U > DISPLAY_ROCKOS_LOGO_HEIGHT / 2U + 54U
-        ? height / 2U - DISPLAY_ROCKOS_LOGO_HEIGHT / 2U - 54U : 0U;
-    display_draw_rockos_logo(logo_x, logo_y);
-
-    uint32_t tagline_y = logo_y + DISPLAY_ROCKOS_LOGO_HEIGHT + 14U;
-    const char* tagline = "A different kind of operating system";
-    uint32_t tagline_x = width > 296U ? (width - 296U) / 2U : 0U;
-    display_draw_text_ui(tagline_x, tagline_y, tagline, COLOR_LIGHT_GRAY);
-
-    uint32_t status_y = tagline_y + DISPLAY_UI_TEXT_HEIGHT + 30U;
-    boot_draw_status(width, status_y, 0U);
-    display_present();
-    boot_wait_ticks(35ULL);
-
     uint64_t start = timer_get_ticks();
-    uint32_t previous_stage = UINT32_MAX;
-    while (timer_get_ticks() - start < BOOT_LOADING_TICKS) {
-        uint64_t elapsed = timer_get_ticks() - start;
-        uint32_t stage = (uint32_t)(elapsed / BOOT_STATUS_TICKS);
-        if (stage != previous_stage) {
-            boot_draw_status(width, status_y, stage);
-            previous_stage = stage;
+    wait_until(start, 20U);
+    start = timer_get_ticks();
+
+    int32_t done_t = -1;
+    uint32_t t = 0;
+    for (;;) {
+        t = (uint32_t)(timer_get_ticks() - start);
+        const int32_t T = (int32_t)t;
+
+        /* Progress in permille: external value, or a timed ease. */
+        int32_t pe;
+        if (g_external_permille != 0xFFFFFFFFU) {
+            pe = (int32_t)g_external_permille;
+        } else {
+            int32_t pt = clampi(((T - T_PROGRESS) * 1000) / (int32_t)PROGRESS_TICKS, 0, 1000);
+            int32_t sm = ((pt * pt) / 1000) * (3000 - 2 * pt) / 1000;
+            pe = (pt * 6) / 10 + (sm * 4) / 10;
         }
-        boot_draw_loading(width, height, elapsed / 2ULL);
+        if (pe >= 1000 && done_t < 0 && T > T_PROGRESS) done_t = T;
+        if (done_t >= 0 && T > done_t + GLINT_TICKS + (int32_t)FADE_TICKS) break;
+
+        fx_t fx = { 256, NOGLINT, sw, sh };
+        if (done_t >= 0) {
+            fx.ga = 256 - clampi(((T - done_t - GLINT_TICKS) * 256) / (int32_t)FADE_TICKS, 0, 256);
+            if (T - done_t < GLINT_TICKS) {
+                fx.glint = -BLOGO_W / 6 + ((T - done_t) * (BLOGO_W + BLOGO_W / 3)) / GLINT_TICKS;
+            }
+        } else if (T >= T_GLINT1 && T < T_GLINT1 + GLINT_TICKS) {
+            fx.glint = -BLOGO_W / 6 + ((T - T_GLINT1) * (BLOGO_W + BLOGO_W / 3)) / GLINT_TICKS;
+        }
+
+        /* Clear the area the logo can occupy (wide while pieces are flying). */
+        const int32_t m = T < 160 ? BLOGO_FLY + 14 : 12;
+        int32_t cx = ox - m, cy = oy - m;
+        int32_t cw = BLOGO_W + 2 * m, ch = BLOGO_H + 2 * m;
+        if (cx < 0) { cw += cx; cx = 0; }
+        if (cy < 0) { ch += cy; cy = 0; }
+        if (cx + cw > (int32_t)sw) cw = (int32_t)sw - cx;
+        if (cy + ch > (int32_t)sh) ch = (int32_t)sh - cy;
+        display_fill_rect_rgb((uint32_t)cx, (uint32_t)cy, (uint32_t)cw, (uint32_t)ch, BG, BG, BG);
+
+        /* Facets: fly in, snap, then fill as progress. */
+        for (int32_t k = 0; k < BLOGO_FACETS; k++) {
+            const blogo_part_t* p = &blogo_parts[k];
+            const int32_t lt = T - 12 * k;
+            const int32_t e = ease_out_back(clampi((lt * 1024) / 110, 0, 1024));
+            const int32_t inv = 1024 - e;
+            const int32_t ea = clampi((lt * 256) / 50, 0, 256);
+            const int32_t dx = (dirx[k] * BLOGO_FLY * inv) / (10 * 1024);
+            const int32_t dy = (diry[k] * BLOGO_FLY * inv) / (10 * 1024);
+            const int32_t f = clampi(pe * 5 - order[k] * 1000, 0, 1000);
+            draw_part(p, ox + p->x + dx, oy + p->y + dy, p->x, p->y, f, ea, &fx);
+        }
+        /* Letters: rise and fade in, R-o-c-k-O-S. */
+        for (int32_t i = 0; i < BLOGO_LETTERS; i++) {
+            const blogo_part_t* p = &blogo_parts[BLOGO_FACETS + i];
+            const int32_t lt = T - T_LETTERS - 9 * i;
+            const int32_t e = ease_out_cubic(clampi((lt * 1024) / 80, 0, 1024));
+            draw_part(p, ox + p->x, oy + p->y + ((1024 - e) * (BLOGO_FLY / 6)) / 1024,
+                p->x, p->y, -1, e >> 2, &fx);
+        }
+
+        /* Progress line + status text. */
+        display_fill_rect_rgb((uint32_t)(bar_x - 12), (uint32_t)(bar_y - 8),
+            BAR_W + 24U, 40U, BG, BG, BG);
+        const int32_t ua = clampi(((T - T_UI) * 256) / 60, 0, 256) * fx.ga / 256;
+        if (ua > 8) {
+            const int32_t track = mix(TRACK, ua), lit = mix(FG, ua);
+            display_fill_rect_rgb((uint32_t)bar_x, (uint32_t)bar_y, BAR_W, BAR_H,
+                (uint8_t)track, (uint8_t)track, (uint8_t)track);
+            const int32_t fw = (BAR_W * pe) / 1000;
+            if (fw > 0) {
+                display_fill_rect_rgb((uint32_t)bar_x, (uint32_t)bar_y, (uint32_t)fw, BAR_H,
+                    (uint8_t)lit, (uint8_t)lit, (uint8_t)lit);
+                const int32_t hx = fw > 2 ? fw - 2 : 0;
+                const int32_t hv = mix(255, ua);
+                display_fill_rect_rgb((uint32_t)(bar_x + hx), (uint32_t)bar_y, 2U, BAR_H,
+                    (uint8_t)hv, (uint8_t)hv, (uint8_t)hv);
+            }
+            if (ua > 200) {
+                const char* msg = done_t >= 0 ? "Welcome" : stages[clampi(pe / 200, 0, 4)];
+                char pct[8];
+                draw_number(pct, pe / 10);
+                int32_t plen = 0;
+                while (pct[plen]) plen++;
+                display_draw_text_ui((uint32_t)bar_x, (uint32_t)(bar_y + 12), msg, COLOR_LIGHT_GRAY);
+                display_draw_text_ui((uint32_t)(bar_x + BAR_W - plen * 8), (uint32_t)(bar_y + 12),
+                    pct, COLOR_DARK_GRAY);
+            }
+        }
+
         display_present();
-        boot_wait_ticks(2ULL);
+        wait_until(start, t + FRAME_TICKS);
     }
 
-    /* Give the completed screen a short beat, then hand off to the OS UI. */
-    boot_background(width, height);
+    display_fill_rect_rgb(0, 0, sw, sh, BG, BG, BG);
     display_present();
-    boot_wait_ticks(12ULL);
+    wait_until(timer_get_ticks(), 12U);
 }

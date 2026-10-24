@@ -1034,6 +1034,34 @@ bool display_draw_text_ui(uint32_t x, uint32_t y, const char* text,
     return true;
 }
 
+/* Width in pixels that display_draw_text_ui() would use for `text`
+ * (same advances + kerning, single line). Needs no framebuffer. */
+uint32_t display_measure_text_ui(const char* text) {
+    if (!text) return 0;
+    int64_t pen_q = 0;
+    uint8_t previous_character = 0;
+    while (*text) {
+        uint8_t character = (uint8_t)*text++;
+        if (character < ROCKOS_UI_FONT_FIRST_CHAR ||
+            character >= ROCKOS_UI_FONT_FIRST_CHAR +
+                ROCKOS_UI_FONT_CHAR_COUNT) {
+            character = '?';
+        }
+        uint8_t index = character - ROCKOS_UI_FONT_FIRST_CHAR;
+        if (previous_character) {
+            uint8_t previous_index =
+                previous_character - ROCKOS_UI_FONT_FIRST_CHAR;
+            pen_q += rockos_ui_font_kerning_q[
+                (size_t)previous_index * ROCKOS_UI_FONT_CHAR_COUNT + index];
+        }
+        pen_q += rockos_ui_font_advance_q[index];
+        previous_character = character;
+    }
+    if (pen_q < 0) return 0;
+    return (uint32_t)((pen_q + ROCKOS_UI_FONT_ADVANCE_SCALE / 2) /
+        ROCKOS_UI_FONT_ADVANCE_SCALE);
+}
+
 static void blend_foreground_over_pixel(uint32_t x, uint32_t y,
     uint8_t foreground, uint8_t coverage) {
     if (x >= framebuffer_width || y >= framebuffer_height) return;
@@ -1094,9 +1122,79 @@ bool display_draw_mask_bitmap(uint32_t x, uint32_t y, uint32_t width,
     return true;
 }
 
+/* Logo shrunk by an integer divisor (2 = 240x58, 4 = 120x29, ...), each
+ * output pixel averaging a divisor x divisor block of the 2bpp coverage. */
+bool display_draw_rockos_logo_div(uint32_t x, uint32_t y,
+    uint8_t foreground, uint32_t divisor) {
+    if (divisor == 0 || divisor > 16) return false;
+    uint32_t out_width = ROCKOS_LOGO_WIDTH / divisor;
+    uint32_t out_height = ROCKOS_LOGO_HEIGHT / divisor;
+    uint32_t block = divisor * divisor;
+    if (!framebuffer_active || x >= framebuffer_width ||
+        y >= framebuffer_height ||
+        out_width > framebuffer_width - x ||
+        out_height > framebuffer_height - y) {
+        return false;
+    }
+    for (uint32_t row = 0; row < out_height; row++) {
+        for (uint32_t column = 0; column < out_width; column++) {
+            uint32_t sum = 0;
+            for (uint32_t sy = 0; sy < divisor; sy++) {
+                for (uint32_t sx = 0; sx < divisor; sx++) {
+                    sum += coverage_at(rockos_logo_2bpp,
+                        (size_t)(row * divisor + sy) * ROCKOS_LOGO_WIDTH +
+                        column * divisor + sx);
+                }
+            }
+            uint8_t coverage = (uint8_t)((sum + block / 2U) / block);
+            if (coverage) {
+                blend_foreground_over_pixel(x + column, y + row,
+                    foreground, coverage);
+            }
+        }
+    }
+    redraw_pixel_mouse_cursor();
+    return true;
+}
+
 bool display_draw_rockos_logo(uint32_t x, uint32_t y) {
     return display_draw_mask_bitmap(x, y, ROCKOS_LOGO_WIDTH,
         ROCKOS_LOGO_HEIGHT, rockos_logo_2bpp, COLOR_WHITE);
+}
+
+/* Half-size (240x58) logo in any palette colour. Each output pixel averages
+ * a 2x2 block of the full-size 2bpp coverage (0..12 -> 0..3). Used by the
+ * error screen, which wants a small dim logo. */
+bool display_draw_rockos_logo_half(uint32_t x, uint32_t y,
+    uint8_t foreground) {
+    uint32_t out_width = ROCKOS_LOGO_WIDTH / 2U;
+    uint32_t out_height = ROCKOS_LOGO_HEIGHT / 2U;
+    if (!framebuffer_active || x >= framebuffer_width ||
+        y >= framebuffer_height ||
+        out_width > framebuffer_width - x ||
+        out_height > framebuffer_height - y) {
+        return false;
+    }
+    for (uint32_t row = 0; row < out_height; row++) {
+        for (uint32_t column = 0; column < out_width; column++) {
+            size_t top_left = (size_t)(row * 2U) * ROCKOS_LOGO_WIDTH +
+                column * 2U;
+            uint32_t sum =
+                coverage_at(rockos_logo_2bpp, top_left) +
+                coverage_at(rockos_logo_2bpp, top_left + 1U) +
+                coverage_at(rockos_logo_2bpp,
+                    top_left + ROCKOS_LOGO_WIDTH) +
+                coverage_at(rockos_logo_2bpp,
+                    top_left + ROCKOS_LOGO_WIDTH + 1U);
+            uint8_t coverage = (uint8_t)((sum + 2U) / 4U);
+            if (coverage) {
+                blend_foreground_over_pixel(x + column, y + row,
+                    foreground, coverage);
+            }
+        }
+    }
+    redraw_pixel_mouse_cursor();
+    return true;
 }
 
 /* ---------------------------------------------------------------------- */

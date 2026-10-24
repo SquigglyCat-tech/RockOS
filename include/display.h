@@ -49,6 +49,11 @@ bool display_draw_text_scaled(uint32_t x, uint32_t y, const char* text,
 bool display_draw_mask_bitmap(uint32_t x, uint32_t y, uint32_t width,
     uint32_t height, const uint8_t* coverage_2bpp, uint8_t foreground);
 bool display_draw_rockos_logo(uint32_t x, uint32_t y);
+bool display_draw_rockos_logo_half(uint32_t x, uint32_t y,
+    uint8_t foreground);
+bool display_draw_rockos_logo_div(uint32_t x, uint32_t y,
+    uint8_t foreground, uint32_t divisor);
+uint32_t display_measure_text_ui(const char* text);
 
 /* Photo wallpaper. display_wallpaper_prepare() scales an RGB888 image (rows
  * top to bottom, 3 bytes per pixel) so it COVERS a dst_width x dst_height

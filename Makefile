@@ -38,6 +38,7 @@ C_SOURCES = src/kernel/kernel.c \
             src/kernel/acpi.c \
             src/kernel/pic.c \
             src/kernel/idt.c \
+            src/kernel/repair.c \
 			src/kernel/gdt.c \
             src/drivers/display.c \
             src/drivers/ps2.c \
@@ -145,6 +146,15 @@ $(UI_ASSETS): $(UI_FONT) $(UI_FONT_LICENSE) assets/rockos-logo-outlined.png scri
 src/drivers/display.o: $(UI_ASSETS)
 src/drivers/display.32.o: $(UI_ASSETS)
 
+# Boot animation logo pieces: PNG -> 5 facets + 6 letters as alpha masks (needs: pip install pillow)
+BOOT_LOGO_DATA = src/kernel/boot_logo_data.h
+
+$(BOOT_LOGO_DATA): assets/rockos-logo-outlined.png scripts/make_boot_logo.py
+	$(PYTHON) scripts/make_boot_logo.py assets/rockos-logo-outlined.png $@
+
+src/kernel/boot_animation.o: $(BOOT_LOGO_DATA)
+src/kernel/boot_animation.32.o: $(BOOT_LOGO_DATA)
+
 $(ISO_BOOT_DIR)/selawik-OFL.txt: $(UI_FONT_LICENSE)
 	mkdir -p $(ISO_BOOT_DIR)
 	cp $< $@
@@ -227,6 +237,6 @@ run-installed: $(INSTALL_DISK) $(DATA_DISK)
 		-drive file=$(DATA_DISK),format=raw,if=ide,index=1
 
 clean:
-	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS) $(WALLPAPER_RGB)
+	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS) $(WALLPAPER_RGB) $(BOOT_LOGO_DATA)
 
 .PHONY: all run run-installed clean kernel32

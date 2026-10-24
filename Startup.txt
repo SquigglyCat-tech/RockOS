@@ -4,8 +4,8 @@ ROK / RockOS Quick Start
 Open MSYS2 UCRT64 and run:
 
 export PATH="/c/opt/x86_64-elf-tools/bin:$PATH"
-cd /c/path/to/rockos
-make run
+cd "/c/Users/gabri/OneDrive/Documents/rockos" || exit 1
+make
 
 Or a simplified version: export PATH="/c/opt/x86_64-elf-tools/bin:$PATH" && cd /c/path/to/rockos && make run
 

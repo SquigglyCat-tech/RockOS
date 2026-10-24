@@ -2253,11 +2253,35 @@ static void shell_print_help(void) {
     shell_write("irq       Show IDT vectors and PIC masks\n");
     shell_write("audio     Show AC'97 device and playback diagnostics\n");
     shell_write("ring3fault Trigger the isolated Ring 3 fault test\n");
+    shell_write("crash [div|ud|gp|panic] Deliberately crash the kernel (test the error screen)\n");
     shell_write("installer Check for a safe dedicated install disk\n");
     shell_write("version   Show RockOS version and kernel identity\n");
     shell_write("sysinfo   Show a compact system summary\n");
     shell_write("reboot    Reset the machine\n");
     shell_write("shutdown  Power off using ACPI\n");
+}
+
+/* Deliberate kernel crash for testing the error screen. Every variant is a
+ * clean CPU exception raised by one instruction: nothing is overwritten and
+ * no memory is touched, so the panic handler runs on an intact kernel. */
+static void shell_crash(const char* kind) {
+    if (kind[0] == '\0' || command_is(kind, "ud")) {
+        asm volatile("ud2");                       /* #UD invalid opcode */
+    } else if (command_is(kind, "div")) {
+        asm volatile("xorl %%edx, %%edx\n\t"
+                     "xorl %%ecx, %%ecx\n\t"
+                     "movl $1, %%eax\n\t"
+                     "divl %%ecx"                  /* #DE divide by zero */
+                     : : : "eax", "ecx", "edx", "cc");
+    } else if (command_is(kind, "gp")) {
+        asm volatile("movw $0xFFF8, %%ax\n\t"
+                     "movw %%ax, %%fs"             /* #GP bad selector */
+                     : : : "ax");
+    } else if (command_is(kind, "panic")) {
+        asm volatile("int3");                      /* #BP breakpoint */
+    } else {
+        shell_write("Usage: crash [div|ud|gp|panic]\n");
+    }
 }
 
 static void shell_reboot(void) __attribute__((noreturn));
@@ -2336,6 +2360,10 @@ static void shell_execute(void) {
         if (!task_create("ring3_fault", ring3_fault_test_task)) {
             shell_write("Unable to create the Ring 3 fault-test task.\n");
         }
+    } else if (command_is(command_buffer, "crash")) {
+        shell_crash("");
+    } else if (shell_get_argument(command_buffer, "crash", argument, sizeof(argument))) {
+        shell_crash(argument);
     } else if (command_is(command_buffer, "installer")) {
         shell_installer_open();
     } else if (command_is(command_buffer, "panic")) {
