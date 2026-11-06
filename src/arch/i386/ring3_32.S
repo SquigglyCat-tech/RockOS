@@ -38,6 +38,32 @@ ring3_user_test_program_start:
     .byte 0x0F, 0x0B                     /* ud2 (unreachable) */
 ring3_user_test_program_end:
 
+
+.global ring3_memory_program_start
+.global ring3_memory_program_end
+/* mmap(1) via ebx -> store 0x5A -> read back -> putchar('M'|'X') -> exit(0)
+ * i386 syscall convention: number in eax, argument in ebx.
+ * (Same opcode stream as the x86_64 version except BB/mov ebx and 0x80 FB.) */
+ring3_memory_program_start:
+    .byte 0xB8, 0x05, 0x00, 0x00, 0x00   /* mov $5, %eax (mmap) */
+    .byte 0xBB, 0x01, 0x00, 0x00, 0x00   /* mov $1, %ebx (1 page) */
+    .byte 0xCD, 0x80                     /* int $0x80 -> %eax */
+    .byte 0x3D, 0xFF, 0xFF, 0xFF, 0x0F   /* cmp $0x0FFFFFFF, %eax */
+    .byte 0x77, 0x15                     /* ja +21 -> fail */
+    .byte 0xC6, 0x00, 0x5A               /* mov $0x5A, (%eax) */
+    .byte 0x0F, 0xB6, 0x08               /* movzbl (%eax), %ecx */
+    .byte 0x80, 0xFB, 0x5A               /* cmp $0x5A, %bl */
+    .byte 0xB8, 0x01, 0x00, 0x00, 0x00   /* mov $1, %eax (putchar) */
+    .byte 0xBB, 0x4D, 0x00, 0x00, 0x00   /* mov $0x4D, %ebx ('M') */
+    .byte 0x74, 0x05                     /* je +5 -> print */
+    .byte 0xBB, 0x58, 0x00, 0x00, 0x00   /* mov $0x58, %ebx ('X') */
+ring3_memory_print:
+    .byte 0xCD, 0x80                     /* int $0x80 */
+    .byte 0xB8, 0x00, 0x00, 0x00, 0x00   /* mov $0, %eax (exit) */
+    .byte 0xCD, 0x80                     /* int $0x80 */
+    .byte 0x0F, 0x0B                     /* ud2 guard */
+ring3_memory_program_end:
+
 .global ring3_fault_program_start
 .global ring3_fault_program_end
 ring3_fault_program_start:
