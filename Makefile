@@ -99,6 +99,16 @@ INSTALL_MODULE = $(ISO_BOOT_DIR)/rockos-install.img
 ISO_DIR = iso
 ISO_BOOT_DIR = $(ISO_DIR)/boot
 
+# Web (WASM) demo of the desktop UI; needs emscripten (emcc). CI builds
+# it with mymindstorm/setup-emsdk and ships web/ as a zip artifact.
+EMCC ?= emcc
+rockos-web.js: tools/web/rockos_web.c
+	mkdir -p web
+	$(EMCC) $< -O2 -sWASM=1 -sENVIRONMENT=web \
+		-s"EXPORTED_RUNTIME_METHODS=['UTF8ToString']" \
+		-sINCOMING_MODULE_JS_API=['HEAPU32'] -o web/rockos-web.js
+web: rockos-web.js
+
 all: $(ISO_IMAGE)
 
 # Default 64-bit objects.
