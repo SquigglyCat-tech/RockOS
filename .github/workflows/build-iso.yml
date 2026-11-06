@@ -47,8 +47,9 @@ jobs:
 
       - name: Build ISO (x86_64 + i386 kernels)
         run: |
-          export TARGET64=x86_64-linux-gnu
           make -j2 all \
+            TARGET64=x86_64-linux-gnu \
+            TARGET32=x86_64-linux-gnu \
             LIMINE_TOOL="$LIMINE_DIR/limine" \
             LIMINE_DATA_DIR="$LIMINE_DIR"
           ls -lh
