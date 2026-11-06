@@ -990,6 +990,98 @@ static void damage_menu(void)
     damage_add(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
 }
 
+/* ========================= UI animations ============================ */
+
+/* Start menu and cascading submenus slide open top-down a few ticks
+ * after opening; rows are clickable during the reveal. Window
+ * open/close/minimize/restore play hollow zoom rectangles that ease
+ * toward the title bar, straight out of the 90s. Timing is 100 Hz
+ * ticks (DESKTOP_TIMER_HZ in timer.h). */
+#define MENU_ANIM_TICKS 10
+#define SUB_ANIM_TICKS  8
+#define ZOOM_ANIM_TICKS 12
+
+typedef struct {
+    bool active;
+    bool grow;   /* true: expand to window, false: contract to title bar */
+    uint32_t tick;
+    int32_t x, y, w, h;      /* full window rect */
+} zoom_t;
+
+static zoom_t zoom;
+static uint32_t menu_anim;   /* 0 = idle/full; 1..MENU_ANIM_TICKS = opening */
+static uint32_t sub_anim;    /* 0 = idle/full; 1..SUB_ANIM_TICKS = opening */
+
+/* Current animated zoom rect (zoom tick + smoothstep ease). */
+static void zoom_box(box_t* b)
+{
+    uint32_t raw = zoom.grow ? zoom.tick : ZOOM_ANIM_TICKS - zoom.tick;
+    uint32_t e = raw * raw * (3 * ZOOM_ANIM_TICKS - 2 * raw);
+    uint32_t denom =
+        ZOOM_ANIM_TICKS * ZOOM_ANIM_TICKS * ZOOM_ANIM_TICKS;
+    int32_t cur_w = (int32_t)((uint32_t)zoom.w * e / denom);
+    int32_t cur_h = TITLE_H + (int32_t)((uint32_t)(zoom.h - TITLE_H) *
+        e / denom);
+    int32_t cx = zoom.x + zoom.w / 2;
+
+    if (cur_w > zoom.w) cur_w = zoom.w;
+    b->x0 = cx - cur_w / 2;
+    b->y0 = zoom.y;
+    b->x1 = b->x0 + cur_w;
+    b->y1 = zoom.y + cur_h;
+}
+
+static void anim_zoom_start(bool grow, int w)
+{
+    box_t seed;
+    zoom.active = true;
+    zoom.grow = grow;
+    zoom.tick = 0;
+    zoom.x = wins[w].x;
+    zoom.y = wins[w].y;
+    zoom.w = wins[w].w;
+    zoom.h = wins[w].h;
+    zoom_box(&seed);
+    damage_add(seed.x0, seed.y0, seed.x1 - seed.x0, seed.y1 - seed.y0);
+}
+
+static void anim_menu_start(void) { menu_anim = 1; damage_menu(); }
+static void anim_menu_cancel(void) { menu_anim = 0; }
+static void anim_sub_start(void)  { sub_anim = 1; damage_menu(); }
+static void anim_sub_cancel(void) { sub_anim = 0; }
+
+/* Advance every animation one tick (called from desktop_update). */
+static void anim_tick(void)
+{
+    box_t before, after;
+
+    if (menu_anim > 0) {
+        if (menu_anim < MENU_ANIM_TICKS) menu_anim++;
+        else menu_anim = 0;
+        damage_menu();
+    }
+    if (sub_anim > 0) {
+        if (sub_anim < SUB_ANIM_TICKS) sub_anim++;
+        else sub_anim = 0;
+        damage_menu();
+    }
+    if (zoom.active) {
+        zoom_box(&before);
+        zoom.tick++;
+        if (zoom.tick <= ZOOM_ANIM_TICKS) {
+            zoom_box(&after);
+            if (after.x0 != before.x0 || after.y0 != before.y0 ||
+                after.x1 != before.x1 || after.y1 != before.y1) {
+                damage_add(before.x0, before.y0,
+                    before.x1 - before.x0, before.y1 - before.y0);
+                damage_add(after.x0, after.y0,
+                    after.x1 - after.x0, after.y1 - after.y0);
+            }
+        }
+        if (zoom.tick > ZOOM_ANIM_TICKS) zoom.active = false;
+    }
+}
+
 /* Only regions whose look changes on hover need a repaint. */
 static void damage_region(region_t r)
 {
@@ -1436,6 +1528,7 @@ static void focus_top(void)
 
 static void win_focus(int w)
 {
+    if (wins[w].minimized) anim_zoom_start(true, w);
     wins[w].minimized = false;
     z_raise(w);
     focused = w;
@@ -1483,6 +1576,7 @@ static void win_open(int w)
     if (!wins[w].open) {
         wins[w].open = true;
         win_place(w);
+        anim_zoom_start(true, w);
         if (w == W_COMPUTER) fm_init();
         if (w == W_TERM && term_count == 0) {
             term_push("RockOS V.2 [ROK kernel]");
@@ -1494,6 +1588,7 @@ static void win_open(int w)
 
 static void win_close(int w)
 {
+    if (wins[w].open) anim_zoom_start(false, w);
     wins[w].open = false;
     wins[w].minimized = false;
     wins[w].maximized = false;
@@ -1503,6 +1598,7 @@ static void win_close(int w)
 
 static void win_minimize(int w)
 {
+    anim_zoom_start(false, w);
     wins[w].minimized = true;
     if (focused == w) focus_top();
 }
@@ -2444,16 +2540,24 @@ static void draw_menu(void)
     int i;
     int32_t top = menu_top();
     int32_t th = menu_total_h();
+    int32_t h_eff = th;
     int32_t rx = BANNER_W + 4;
     int32_t rw = MENU_W - rx - 4;
     const char* banner = "RockOS";
     int32_t by0;
 
-    rect(0, top, MENU_W, th, TH.face);
-    bevel_raised(0, top, MENU_W, th);
+    /* opening reveal: the menu body slides down its full height */
+    if (menu_anim > 0) {
+        h_eff = th * menu_anim / MENU_ANIM_TICKS;
+        if (h_eff < 8) h_eff = 8;
+        if (h_eff > th) h_eff = th;
+    }
 
-    gradient_v(3, top + 3, BANNER_W, th - 6, TH.banner0, TH.banner1);
-    by0 = top + th - 6 - 6 * 20 - 8;
+    rect(0, top, MENU_W, h_eff, TH.face);
+    bevel_raised(0, top, MENU_W, h_eff);
+
+    gradient_v(3, top + 3, BANNER_W, h_eff - 6, TH.banner0, TH.banner1);
+    by0 = top + h_eff - 6 - 6 * 20 - 8;
     for (i = 0; i < 6; i++) {
         char one[2];
         one[0] = banner[i];
@@ -2463,6 +2567,8 @@ static void draw_menu(void)
 
     for (i = 0; i < MENU_COUNT; i++) {
         int32_t ry = menu_row_y(i);
+        /* rows appear from the top as the reveal slides */
+        if (menu_anim > 0 && ry + 8 > top + h_eff) continue;
         if (!menu_items[i].label) {
             rect(rx, ry + 4, rw, 1, TH.shadow);
             rect(rx, ry + 5, rw, 1, TH.hilite);
@@ -2474,13 +2580,23 @@ static void draw_menu(void)
     }
 
     if (sub_open >= 0) {
-        int32_t sx, sy, swd, shg;
+        int32_t sx, sy, swd, shg, sh_eff;
         int k;
         const menu_item_t* it = &menu_items[sub_open];
         sub_geom(sub_open, &sx, &sy, &swd, &shg);
-        rect(sx, sy, swd, shg, TH.face);
-        bevel_raised(sx, sy, swd, shg);
+        sh_eff = shg;
+        if (sub_anim > 0) {
+            sh_eff = shg * sub_anim / SUB_ANIM_TICKS;
+            if (sh_eff < 8) sh_eff = 8;
+            if (sh_eff > shg) sh_eff = shg;
+        }
+        rect(sx, sy, swd, sh_eff, TH.face);
+        bevel_raised(sx, sy, swd, sh_eff);
         for (k = 0; k < it->sub_count; k++) {
+            if (sub_anim > 0 &&
+                sy + 4 + k * MENU_ITEM_H + 8 > sy + sh_eff) {
+                continue;
+            }
             uint8_t act = it->subs[k].action;
             int icon = IC_FOLDER;
             if (act == A_COMPUTER) icon = IC_COMPUTER;
@@ -2494,6 +2610,27 @@ static void draw_menu(void)
                     hover.sub == k, false);
         }
     }
+}
+
+/* Hollow, double-framed zoom rectangle, Win95-style. */
+static void draw_zoom(void)
+{
+    box_t r;
+    int32_t w, h;
+
+    if (!zoom.active) return;
+    zoom_box(&r);
+    w = r.x1 - r.x0;
+    h = r.y1 - r.y0;
+    if (w < 10 || h < 10) return;
+    rect(r.x0, r.y0, w, 1, TH.hilite);
+    rect(r.x0, r.y0, 1, h, TH.hilite);
+    rect(r.x0, r.y1 - 1, w, 1, TH.dkshadow);
+    rect(r.x1 - 1, r.y0, 1, h, TH.dkshadow);
+    rect(r.x0 + 3, r.y0 + 3, w - 6, 1, TH.shadow);
+    rect(r.x0 + 3, r.y0 + 3, 1, h - 6, TH.shadow);
+    rect(r.x0 + 3, r.y0 + h - 4, w - 6, 1, TH.light);
+    rect(r.x0 + w - 4, r.y0 + 3, 1, h - 6, TH.light);
 }
 
 static void draw_all(uint64_t ticks)
@@ -2525,6 +2662,7 @@ static void draw_all(uint64_t ticks)
             draw_menu();
         }
     }
+    draw_zoom();
 }
 
 /* ====================================================================== */
@@ -2540,21 +2678,29 @@ static void on_press(int32_t x, int32_t y)
     if (r.kind != R_START && r.kind != R_MENUITEM && r.kind != R_SUBITEM) {
         menu_open = false;
         sub_open = -1;
+        anim_menu_cancel();
+        anim_sub_cancel();
     }
 
     switch (r.kind) {
     case R_START:
         menu_open = !was_menu;
         sub_open = -1;
+        if (menu_open) anim_menu_start();
+        else anim_menu_cancel();
         break;
     case R_MENUITEM:
         if (r.idx >= 0) {
             const menu_item_t* it = &menu_items[r.idx];
             if (it->sub_count) {
                 sub_open = (sub_open == r.idx) ? -1 : r.idx;
+                if (sub_open >= 0) anim_sub_start();
+                else anim_sub_cancel();
             } else {
                 menu_open = false;
                 sub_open = -1;
+                anim_menu_cancel();
+                anim_sub_cancel();
                 run_action(it->action);
                 if (!active) return;
             }
@@ -2565,6 +2711,8 @@ static void on_press(int32_t x, int32_t y)
             uint8_t act = menu_items[r.idx].subs[r.sub].action;
             menu_open = false;
             sub_open = -1;
+            anim_menu_cancel();
+            anim_sub_cancel();
             run_action(act);
             if (!active) return;
         }
@@ -2703,6 +2851,10 @@ void desktop_start(void)
     last_title_win = -1;
     drag_win = -1;
     prev_left = false;
+    menu_anim = 0;
+    sub_anim = 0;
+    zoom.active = false;
+    zoom.tick = 0;
     mx = sw / 2;
     my = sh / 2;
     hover.kind = R_NONE;
@@ -2766,6 +2918,8 @@ void desktop_handle_mouse(int32_t x, int32_t y, bool left_down)
                     if (want != sub_open) {
                         damage_menu();
                         sub_open = want;
+                        if (want >= 0) anim_sub_start();
+                        else anim_sub_cancel();
                         damage_menu();
                     }
                 }
@@ -2808,6 +2962,8 @@ void desktop_handle_key(const input_key_event_t* e)
     if (e->scancode == SC_ESC && !e->is_extended && menu_open) {
         menu_open = false;
         sub_open = -1;
+        anim_menu_cancel();
+        anim_sub_cancel();
         damage_all();
         return;
     }
@@ -2829,6 +2985,8 @@ void desktop_update(uint64_t ticks)
     uint64_t sec;
 
     if (!active) return;
+
+    anim_tick();
 
     sec = ticks / DESKTOP_TIMER_HZ;
     if (sec != last_sec) {
