@@ -46,3 +46,20 @@ testable, with the whole build staying green in CI after every merge.
   writes `0x5A`, reads it back, prints `M` on success / `X` on
   mismatch, and exits — run from the boot sequence next to the
   existing ring-3 test.
+
+## Layer 1 addition: RockOS native executables (.rok)
+
+Native executables live next to Wine in the same layer: the same user
+syscall surface (int 0x80 exit/putchar/mmap/munmap), a smaller loader.
+
+- File layout: magic "ROK1", 24-byte header (flags bit0 arch: 0=i386,
+  1=amd64; entry offset; code size 24+4096 max).
+- `include/rok.h` / `src/kernel/rok.c` parse and validate; host-verified
+  with `tests/rok_host_test.c` (valid i386/amd64, bad magic/header,
+  unknown flags, entry beyond code, oversized code, truncation,
+  nonzero reserved bytes — all PASS).
+- Shell: `run <path.rgo>`... `run <path>` (reads the .rok from RockFS,
+  arch-gates the payload against the running kernel) and
+  `run builtin` (self-contained demo that prints "R" via putchar and
+  exits). Executed in ring 3 by `ring3_rok_task` at dedicated code and
+  stack addresses.
