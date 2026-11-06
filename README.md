@@ -7,6 +7,7 @@ graphical installer and a small interactive kernel environment.
 ## Highlights
 
 - Limine BIOS and UEFI boot support
+- Boot menu video modes: 1024x768 (default), 1920x1080, and 3840x2160 (4K)
 - 64-bit kernel with interrupt, paging, task, and TSS foundations
 - Framebuffer UI and graphical installation flow
 - Desktop with a start menu and draggable About/shortcuts windows
