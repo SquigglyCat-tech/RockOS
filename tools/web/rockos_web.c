@@ -18,6 +18,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 #define SCREEN_W 800
 #define SCREEN_H 520
 #define TASK_H (int32_t)32
@@ -405,7 +409,6 @@ static void tick(void)
 /* --------------------------- event plumbing ------------------------ */
 
 #ifdef __EMSCRIPTEN__
-#include <emscripten.h>
 #include <emscripten/html5.h>
 
 static EM_BOOL on_mousemove(int type, const EmscriptenMouseEvent* e,
