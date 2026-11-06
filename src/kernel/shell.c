@@ -16,6 +16,8 @@
 #include "task.h"
 #include "timer.h"
 #include "tour.h"
+#include "pmm.h"
+#include "network.h"
 
 #define RCK_CREDITS_SAMPLE \
     "window(\n" \
@@ -74,6 +76,7 @@
 
 enum {
     SHELL_INSTALLER_PAGE_PREFERENCES = 0,
+    SHELL_INSTALLER_PAGE_NETWORK,
     SHELL_INSTALLER_PAGE_TARGET,
     SHELL_INSTALLER_PAGE_CONFIRM,
     SHELL_INSTALLER_PAGE_RESULT
@@ -99,6 +102,7 @@ typedef enum {
     SHELL_INSTALLER_BUTTON_BACK,
     SHELL_INSTALLER_BUTTON_CANCEL,
     SHELL_INSTALLER_BUTTON_INSTALL,
+    SHELL_INSTALLER_BUTTON_SKIP,
     SHELL_INSTALLER_BUTTON_FINISH
 } shell_installer_button_t;
 
@@ -108,6 +112,7 @@ typedef enum {
     SHELL_INSTALLER_ACTION_CANCEL,
     SHELL_INSTALLER_ACTION_CONFIRM,
     SHELL_INSTALLER_ACTION_INSTALL,
+    SHELL_INSTALLER_ACTION_SKIP,
     SHELL_INSTALLER_ACTION_FINISH
 } shell_installer_action_t;
 
@@ -485,6 +490,46 @@ static bool shell_installer_button_rect(uint8_t page,
             SHELL_INSTALLER_NEXT_BOTTOM_INSET - SHELL_INSTALLER_NEXT_HEIGHT;
         rect->width = SHELL_INSTALLER_NEXT_WIDTH;
         rect->height = SHELL_INSTALLER_NEXT_HEIGHT;
+        return true;
+    }
+
+    if (page == SHELL_INSTALLER_PAGE_NETWORK &&
+        (button == SHELL_INSTALLER_BUTTON_BACK ||
+         button == SHELL_INSTALLER_BUTTON_NEXT)) {
+        bool back = button == SHELL_INSTALLER_BUTTON_BACK;
+        uint32_t next_x = screen_width -
+            SHELL_INSTALLER_DIALOG_PANEL_RIGHT -
+            SHELL_INSTALLER_DIALOG_BUTTON_RIGHT_INSET -
+            SHELL_INSTALLER_FORWARD_BUTTON_WIDTH;
+        rect->x = back
+            ? next_x - SHELL_INSTALLER_NAV_BUTTON_GAP -
+                SHELL_INSTALLER_BACK_BUTTON_WIDTH
+            : next_x;
+        rect->y = screen_height -
+            SHELL_INSTALLER_DIALOG_PANEL_BOTTOM -
+            SHELL_INSTALLER_DIALOG_BUTTON_BOTTOM_INSET -
+            SHELL_INSTALLER_NAV_BUTTON_HEIGHT;
+        rect->width = back ? SHELL_INSTALLER_BACK_BUTTON_WIDTH
+            : SHELL_INSTALLER_FORWARD_BUTTON_WIDTH;
+        rect->height = SHELL_INSTALLER_NAV_BUTTON_HEIGHT;
+        return true;
+    }
+
+    if (page == SHELL_INSTALLER_PAGE_NETWORK &&
+        button == SHELL_INSTALLER_BUTTON_SKIP) {
+        uint32_t next_x = screen_width -
+            SHELL_INSTALLER_DIALOG_PANEL_RIGHT -
+            SHELL_INSTALLER_DIALOG_BUTTON_RIGHT_INSET -
+            SHELL_INSTALLER_FORWARD_BUTTON_WIDTH;
+        rect->x = next_x - SHELL_INSTALLER_NAV_BUTTON_GAP -
+            SHELL_INSTALLER_BACK_BUTTON_WIDTH -
+            SHELL_INSTALLER_NAV_BUTTON_GAP;
+        rect->y = screen_height -
+            SHELL_INSTALLER_DIALOG_PANEL_BOTTOM -
+            SHELL_INSTALLER_DIALOG_BUTTON_BOTTOM_INSET -
+            SHELL_INSTALLER_NAV_BUTTON_HEIGHT;
+        rect->width = SHELL_INSTALLER_BACK_BUTTON_WIDTH;
+        rect->height = SHELL_INSTALLER_NAV_BUTTON_HEIGHT;
         return true;
     }
 
@@ -1390,6 +1435,9 @@ static bool shell_installer_bytes_equal(const uint8_t* left,
     return true;
 }
 
+static void shell_installer_rollback(const block_device_t* target,
+    const uint8_t* journal_buffer, uint64_t journal_sectors);
+
 static void shell_installer_install(void) {
     const block_device_t* target = shell_installer_get_target();
     if (!target || target->sector_size != BLOCK_SECTOR_SIZE ||
@@ -1441,6 +1489,61 @@ static void shell_installer_install(void) {
         display_write_at(2, 4, target->name);
     }
 
+    /* Rollback journal: keep a copy of everything the setup is about to
+     * overwrite so a failed write/read-back can restore the disk. Full
+     * backup when physical memory allows (image size), boot-record-only
+     * (first two sectors) otherwise. The journal is released on success. */
+    uint64_t journal_bytes = shell_installer_image_size;
+    size_t journal_pages = (size_t)((journal_bytes + PMM_PAGE_SIZE - 1) /
+        PMM_PAGE_SIZE);
+    uint64_t pmm_free_bytes = 0;
+    {
+        pmm_stats_t stats;
+        pmm_get_stats(&stats);
+        pmm_free_bytes = stats.free_bytes;
+    }
+    if (pmm_free_bytes < journal_bytes + PMM_PAGE_SIZE * 2) {
+        journal_bytes = BLOCK_SECTOR_SIZE * 2;
+        journal_pages = (size_t)((journal_bytes - 1) / PMM_PAGE_SIZE) + 1;
+    }
+    uint8_t* journal_buffer = (uint8_t*)pmm_alloc(journal_pages);
+    if (!journal_buffer) {
+        /* Journal allocation failed: refuse to touch the disk rather
+         * than risk an unprotected write. */
+        shell_installer_draw_result(
+            "Install stopped: not enough memory for the rollback journal.");
+        return;
+    }
+    uint64_t journal_sectors = journal_bytes / BLOCK_SECTOR_SIZE;
+    {
+        bool journal_ok = true;
+        uint64_t backup_lba = 0;
+        for (; backup_lba < journal_sectors;) {
+            uint32_t count = (uint32_t)(journal_sectors - backup_lba);
+            if (count > SHELL_INSTALLER_TRANSFER_SECTORS) {
+                count = SHELL_INSTALLER_TRANSFER_SECTORS;
+            }
+            block_result_t result = block_read(target, backup_lba, count,
+                shell_installer_transfer_buffer);
+            if (result != BLOCK_RESULT_OK) {
+                journal_ok = false;
+                break;
+            }
+            for (size_t index = 0; index < count * BLOCK_SECTOR_SIZE;
+                index++) {
+                journal_buffer[backup_lba * BLOCK_SECTOR_SIZE + index] =
+                    shell_installer_transfer_buffer[index];
+            }
+            backup_lba += count;
+        }
+        if (!journal_ok) {
+            pmm_free(journal_buffer, journal_pages);
+            shell_installer_draw_result(
+                "Install stopped: could not read the rollback journal.");
+            return;
+        }
+    }
+
     uint64_t last_progress_lba = 0;
     for (uint64_t lba = 0; lba < total_sectors;) {
         uint32_t count = (uint32_t)(total_sectors - lba);
@@ -1451,8 +1554,12 @@ static void shell_installer_install(void) {
             lba * BLOCK_SECTOR_SIZE;
         block_result_t result = block_write(target, lba, count, source);
         if (result != BLOCK_RESULT_OK) {
-            shell_installer_draw_result("Install failed writing target disk.");
+            shell_installer_rollback(target, journal_buffer,
+                journal_sectors);
+            shell_installer_draw_result(
+                "Install failed writing target disk. Rolled back.");
             shell_installer_draw_storage_error(result);
+            pmm_free(journal_buffer, journal_pages);
             return;
         }
         lba += count;
@@ -1514,8 +1621,11 @@ static void shell_installer_install(void) {
         }
         if (!shell_installer_bytes_equal(shell_installer_transfer_buffer,
                 expected, bytes)) {
+            shell_installer_rollback(target, journal_buffer,
+                journal_sectors);
             shell_installer_draw_result(
-                "Install failed: read-back verification did not match.");
+                "Install failed: read-back verification did not match. "
+                "Rolled back.");
             return;
         }
         lba += count;
@@ -1534,8 +1644,136 @@ static void shell_installer_install(void) {
         }
     }
 
+    pmm_free(journal_buffer, journal_pages);
     shell_installer_draw_result(
         "Installed. Restart the VM to start RockOS.");
+}
+
+static void shell_installer_rollback(const block_device_t* target,
+    const uint8_t* journal_buffer, uint64_t journal_sectors) {
+    /* Restore every journaled sector so the disk is left exactly as the
+     * setup found it - nothing half-written remains. */
+    for (uint64_t lba = 0; lba < journal_sectors;) {
+        uint32_t count = (uint32_t)(journal_sectors - lba);
+        if (count > SHELL_INSTALLER_TRANSFER_SECTORS) {
+            count = SHELL_INSTALLER_TRANSFER_SECTORS;
+        }
+        for (size_t index = 0; index < count * BLOCK_SECTOR_SIZE; index++) {
+            shell_installer_transfer_buffer[index] =
+                journal_buffer[lba * BLOCK_SECTOR_SIZE + index];
+        }
+        block_result_t result = block_write(target, lba, count,
+            shell_installer_transfer_buffer);
+        if (result != BLOCK_RESULT_OK) {
+            break;
+        }
+        lba += count;
+    }
+}
+
+static void shell_installer_draw_network(void) {
+    shell_installer_page = SHELL_INSTALLER_PAGE_NETWORK;
+    shell_profile_page_begin("network");
+    uint32_t width;
+    uint32_t height;
+    bool graphical = shell_get_graphics_size(&width, &height);
+    network_status_t status = network_probe();
+    network_info_t info;
+    network_describe(&info);
+
+    display_set_mouse_busy(false);
+
+    const char* headline = status == NETWORK_STATUS_READY
+        ? "Network connected"
+        : status == NETWORK_STATUS_NO_MOUNT
+            ? "No mounted system"
+            : status == NETWORK_STATUS_ADAPTER_FOUND
+                ? "Checking network adapter..."
+                : "Please connect your network";
+    const char* detail = status == NETWORK_STATUS_READY
+        ? "Setup will download the RockOS system image over the network."
+        : status == NETWORK_STATUS_NO_MOUNT
+            ? "No mounted system please mount one to download over internet."
+            : status == NETWORK_STATUS_ADAPTER_FOUND
+                ? "Network adapter found (TCP download module not attached in this build)."
+                : "RockOS Setup downloads the system image over the internet.";
+    const char* extra = status == NETWORK_STATUS_READY
+        ? "A failed download is rolled back automatically."
+        : status == NETWORK_STATUS_NO_MOUNT
+            ? "Skipped network setup still requires a mounted system."
+            : "Attach a supported network adapter (RTL8139, e1000, virtio-net).";
+
+    if (graphical) {
+        shell_ui_draw_backdrop("ROCKOS SETUP  /  NETWORK",
+            "Connect to the internet to continue");
+        shell_ui_draw_glass_panel(SHELL_INSTALLER_DIALOG_PANEL_LEFT,
+            SHELL_INSTALLER_DIALOG_PANEL_TOP,
+            width - SHELL_INSTALLER_DIALOG_PANEL_LEFT -
+                SHELL_INSTALLER_DIALOG_PANEL_RIGHT,
+            height - SHELL_INSTALLER_DIALOG_PANEL_TOP -
+                SHELL_INSTALLER_DIALOG_PANEL_BOTTOM);
+        shell_ui_text(156, 176, headline, COLOR_WHITE, COLOR_BLACK);
+        shell_ui_text(156, 220, detail,
+            status == NETWORK_STATUS_READY ? COLOR_LIGHT_GREEN :
+            COLOR_LIGHT_GRAY, COLOR_BLACK);
+        shell_ui_text(156, 264, extra, COLOR_LIGHT_GRAY, COLOR_BLACK);
+        if (info.device_name) {
+            shell_ui_text(156, 308, "Adapter:", COLOR_LIGHT_GRAY,
+                COLOR_BLACK);
+            shell_ui_text(SHELL_INSTALLER_VALUE_X, 308, info.device_name,
+                COLOR_WHITE, COLOR_BLACK);
+        }
+        shell_ui_text(156, height - 92,
+            "Down: refresh   Esc: exit   S: skip network",
+            COLOR_LIGHT_GRAY, COLOR_BLACK);
+        shell_ui_rect_t back_rect;
+        shell_installer_button_rect(SHELL_INSTALLER_PAGE_NETWORK,
+            SHELL_INSTALLER_BUTTON_BACK, width, height, &back_rect);
+        shell_ui_draw_button(&back_rect, "BACK", 40,
+            shell_installer_pressed_button == SHELL_INSTALLER_BUTTON_BACK);
+        if (network_has_mount()) {
+            shell_ui_rect_t skip_rect;
+            shell_installer_button_rect(SHELL_INSTALLER_PAGE_NETWORK,
+                SHELL_INSTALLER_BUTTON_SKIP, width, height, &skip_rect);
+            shell_ui_draw_button(&skip_rect, "SKIP", 40,
+                shell_installer_pressed_button ==
+                    SHELL_INSTALLER_BUTTON_SKIP);
+        }
+        if (status == NETWORK_STATUS_READY) {
+            shell_ui_rect_t next_rect;
+            shell_installer_button_rect(SHELL_INSTALLER_PAGE_NETWORK,
+                SHELL_INSTALLER_BUTTON_NEXT, width, height, &next_rect);
+            shell_ui_draw_button(&next_rect, "NEXT", 28,
+                shell_installer_pressed_button ==
+                    SHELL_INSTALLER_BUTTON_NEXT);
+        }
+        shell_profile_page_end();
+        return;
+    }
+
+    display_set_color(COLOR_WHITE, COLOR_BLACK);
+    display_clear();
+    display_set_color(COLOR_WHITE, COLOR_BLUE);
+    display_write_at(0, 0, "RockOS Setup - Network");
+    display_set_color(status == NETWORK_STATUS_READY ? COLOR_LIGHT_GREEN :
+        COLOR_YELLOW, COLOR_BLACK);
+    display_write_at(2, 3, headline);
+    display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
+    display_write_at(2, 5, detail);
+    display_write_at(2, 7, extra);
+    if (info.device_name) {
+        display_write_at(2, 9, "Adapter:");
+        display_write_at(11, 9, info.device_name);
+    }
+    display_write_at(2, 24, "Enter: refresh   Esc: exit   S: skip network");
+    display_set_color(COLOR_WHITE, COLOR_BLUE);
+    display_write_at(60, 23, status == NETWORK_STATUS_READY
+        ? "[   Next   ]" : "[connect now]");
+    if (network_has_mount()) {
+        display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
+        display_write_at(28, 23, "[  Skip   ]");
+    }
+    shell_profile_page_end();
 }
 
 static void shell_installer_open(void) {
@@ -1626,9 +1864,11 @@ static void shell_installer_navigate(shell_installer_action_t action) {
     }
 
     if (action == SHELL_INSTALLER_ACTION_BACK) {
-        if (shell_installer_page == SHELL_INSTALLER_PAGE_TARGET) {
+        if (shell_installer_page == SHELL_INSTALLER_PAGE_NETWORK) {
             shell_installer_page = SHELL_INSTALLER_PAGE_PREFERENCES;
             shell_installer_draw_setup();
+        } else if (shell_installer_page == SHELL_INSTALLER_PAGE_TARGET) {
+            shell_installer_draw_network();
         } else if (shell_installer_page == SHELL_INSTALLER_PAGE_CONFIRM) {
             shell_installer_page = SHELL_INSTALLER_PAGE_TARGET;
             shell_installer_draw_preflight();
@@ -1636,8 +1876,29 @@ static void shell_installer_navigate(shell_installer_action_t action) {
         return;
     }
 
+    if (action == SHELL_INSTALLER_ACTION_SKIP) {
+        if (shell_installer_page != SHELL_INSTALLER_PAGE_NETWORK) return;
+        /* Skipping the network download still needs a mounted system. */
+        if (!network_has_mount()) {
+            shell_installer_draw_network();
+            return;
+        }
+        shell_installer_page = SHELL_INSTALLER_PAGE_TARGET;
+        shell_installer_draw_preflight();
+        return;
+    }
+
     if (action == SHELL_INSTALLER_ACTION_NEXT) {
         if (shell_installer_page == SHELL_INSTALLER_PAGE_PREFERENCES) {
+            shell_installer_draw_network();
+        } else if (shell_installer_page == SHELL_INSTALLER_PAGE_NETWORK) {
+            if (!network_is_online()) {
+                /* Stay on the connect page until the network is online;
+                 * nothing has been written yet, so there is no rollback
+                 * to perform. */
+                shell_installer_draw_network();
+                return;
+            }
             shell_installer_page = SHELL_INSTALLER_PAGE_TARGET;
             shell_installer_draw_preflight();
         } else if (shell_installer_page == SHELL_INSTALLER_PAGE_TARGET &&
@@ -1657,6 +1918,15 @@ static shell_installer_button_t shell_installer_button_at(
     switch (shell_installer_page) {
         case SHELL_INSTALLER_PAGE_PREFERENCES:
             buttons[button_count++] = SHELL_INSTALLER_BUTTON_NEXT;
+            break;
+        case SHELL_INSTALLER_PAGE_NETWORK:
+            buttons[button_count++] = SHELL_INSTALLER_BUTTON_BACK;
+            if (network_has_mount()) {
+                buttons[button_count++] = SHELL_INSTALLER_BUTTON_SKIP;
+            }
+            if (network_is_online()) {
+                buttons[button_count++] = SHELL_INSTALLER_BUTTON_NEXT;
+            }
             break;
         case SHELL_INSTALLER_PAGE_TARGET:
             buttons[button_count++] = SHELL_INSTALLER_BUTTON_BACK;
@@ -1699,6 +1969,9 @@ static void shell_installer_activate_button(
         case SHELL_INSTALLER_BUTTON_CANCEL:
             shell_installer_navigate(SHELL_INSTALLER_ACTION_BACK);
             break;
+        case SHELL_INSTALLER_BUTTON_SKIP:
+            shell_installer_navigate(SHELL_INSTALLER_ACTION_SKIP);
+            break;
         case SHELL_INSTALLER_BUTTON_INSTALL:
             shell_installer_navigate(SHELL_INSTALLER_ACTION_INSTALL);
             break;
@@ -1714,6 +1987,9 @@ static void shell_installer_redraw_current_page(void) {
     switch (shell_installer_page) {
         case SHELL_INSTALLER_PAGE_PREFERENCES:
             shell_installer_draw_setup();
+            break;
+        case SHELL_INSTALLER_PAGE_NETWORK:
+            shell_installer_draw_network();
             break;
         case SHELL_INSTALLER_PAGE_TARGET:
             shell_installer_draw_preflight();
@@ -1753,6 +2029,13 @@ static void shell_installer_handle_key(const input_key_event_t* event) {
     if (shell_installer_page == SHELL_INSTALLER_PAGE_CONFIRM &&
         (event->ascii == 'y' || event->ascii == 'Y')) {
         shell_installer_navigate(SHELL_INSTALLER_ACTION_CONFIRM);
+        return;
+    }
+    if (shell_installer_page == SHELL_INSTALLER_PAGE_NETWORK) {
+        if (event->ascii == 's' || event->ascii == 'S') {
+            shell_installer_navigate(SHELL_INSTALLER_ACTION_SKIP);
+        }
+        shell_installer_draw_network();
         return;
     }
     if (shell_installer_page != SHELL_INSTALLER_PAGE_PREFERENCES) return;

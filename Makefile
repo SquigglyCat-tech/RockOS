@@ -51,6 +51,7 @@ C_SOURCES = src/kernel/kernel.c \
 			src/kernel/tour.c \
 			src/kernel/rck.c \
 			src/kernel/builtin.c \
+			src/kernel/network.c \
 			src/drivers/audio.c
 
 ASM64_SOURCES = src/arch/x86_64/boot.S \
