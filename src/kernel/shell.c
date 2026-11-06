@@ -18,6 +18,41 @@
 #include "tour.h"
 #include "pmm.h"
 #include "network.h"
+#include "rok.h"
+
+/* Builtin sample .rok: validates the self-contained demo path
+ * (`run builtin`). Payload prints 'R' through the layer 0 syscall and
+ * exits; same bytes exist for both kernel architectures. */
+#ifdef ROCKOS_ARCH_64
+static const uint8_t rok_builtin_payload[] = {
+    0xB8, 0x01, 0x00, 0x00, 0x00,          /* mov eax,1 (putchar) */
+    0xBF, 0x52, 0x00, 0x00, 0x00,          /* mov edi,'R' */
+    0xCD, 0x80,
+    0xBF, 0x0A, 0x00, 0x00, 0x00,          /* '
+' */
+    0xCD, 0x80,
+    0x31, 0xC0,                            /* xor eax,eax (exit) */
+    0xCD, 0x80,
+    0x0F, 0x0B
+};
+#define ROK_BUILTIN_IS_64BIT true
+#else
+static const uint8_t rok_builtin_payload[] = {
+    0xB8, 0x01, 0x00, 0x00, 0x00,          /* mov eax,1 (putchar) */
+    0xBB, 0x52, 0x00, 0x00, 0x00,          /* mov ebx,'R' */
+    0xCD, 0x80,
+    0xBB, 0x0A, 0x00, 0x00, 0x00,          /* '
+' */
+    0xCD, 0x80,
+    0x31, 0xC0,
+    0xCD, 0x80,
+    0x0F, 0x0B
+};
+#define ROK_BUILTIN_IS_64BIT false
+#endif
+
+static const uint64_t rok_builtin_code_size =
+    sizeof(rok_builtin_payload);
 
 #define RCK_CREDITS_SAMPLE \
     "window(\n" \
@@ -2553,6 +2588,7 @@ static void shell_print_help(void) {
     shell_write("irq       Show IDT vectors and PIC masks\n");
     shell_write("audio     Show AC'97 device and playback diagnostics\n");
     shell_write("ring3fault Trigger the isolated Ring 3 fault test\n");
+    shell_write("run path  Run a RockOS native .rok executable (or `run builtin` for the demo)\n");
     shell_write("installer Check for a safe dedicated install disk\n");
     shell_write("version   Show RockOS version and kernel identity\n");
     shell_write("sysinfo   Show a compact system summary\n");
@@ -2661,6 +2697,66 @@ static void shell_execute(void) {
         if (!task_create("ring3_fault", ring3_fault_test_task)) {
             shell_write("Unable to create the Ring 3 fault-test task.\n");
         }
+    } else if (shell_get_argument(command_buffer, "run", argument,
+        sizeof(argument))) {
+        shell_draw_screen();
+        const uint8_t* payload = 0;
+        uint64_t payload_size = 0;
+        if (command_is(argument, "builtin")) {
+            /* the built-in sample is raw payload without a .rok header */
+            if (!ring3_rok_stage(rok_builtin_payload,
+                rok_builtin_code_size, 0, ROK_BUILTIN_IS_64BIT)) {
+                shell_write("run: unable to stage the .rok payload\n");
+                return;
+            }
+            if (!task_create("rok_run", ring3_rok_task)) {
+                shell_write("run: unable to spawn the interpreter task\n");
+            }
+            shell_draw_screen();
+            return;
+        }
+        {
+            uint32_t file_size = 0;
+            if (filesystem_stat(argument, 0) != 0) {
+                shell_write("run: file not found: ");
+                shell_write(argument);
+                shell_write("\n");
+                return;
+            }
+            if (filesystem_read(argument, shell_copy_buffer,
+                sizeof(shell_copy_buffer), &file_size) != 0) {
+                shell_write("run: unable to read file: ");
+                shell_write(argument);
+                shell_write("\n");
+                return;
+            }
+            payload = shell_copy_buffer;
+            payload_size = file_size;
+        }
+        rok_image_t rok_image;
+        rok_status_t rok_status = rok_parse(payload,
+            (size_t)payload_size, &rok_image);
+        if (rok_status != ROK_STATUS_OK) {
+            shell_write("run: ");
+            shell_write(rok_strerror(rok_status));
+            shell_write("\n");
+            return;
+        }
+        /* arch gate: 64-bit payloads need a 64-bit kernel (and vice versa) */
+        if ((rok_image.is_64bit ? 1 : 0) != (ROK_BUILTIN_IS_64BIT ? 1 : 0)) {
+            shell_write("run: payload arch mismatch with this kernel\n");
+            return;
+        }
+        if (!ring3_rok_stage(rok_image.code, rok_image.code_size,
+            rok_image.entry_offset, rok_image.is_64bit)) {
+            shell_write("run: unable to stage the .rok payload\n");
+            return;
+        }
+        if (!task_create("rok_run", ring3_rok_task)) {
+            shell_write("run: unable to spawn the interpreter task\n");
+        }
+        shell_draw_screen();
+        return;
     } else if (command_is(command_buffer, "installer")) {
         shell_installer_open();
     } else if (command_is(command_buffer, "panic")) {
