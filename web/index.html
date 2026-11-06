@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport"
+    content="width=device-width, initial-scale=1, user-scalable=no">
+<title>RockOS Web Demo</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #1b2430;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #c9d1d8;
+  }
+  h1 { font-size: 15px; margin: 8px 0 0; font-weight: 600; }
+  p  { font-size: 12px; margin: 0; opacity: .7; }
+  canvas {
+    border: 1px solid #353f49;
+    box-shadow: 0 12px 42px rgba(0,0,0,.5);
+    image-rendering: pixelated;
+    cursor: none;
+    max-width: 100%;
+  }
+</style>
+</head>
+<body>
+<h1>RockOS Web Demo</h1>
+<p>Start menu, About window, zoom animations — same 100 Hz tick model
+    as the kernel desktop.</p>
+<canvas id="screen" width="800" height="520"></canvas>
+<script async src="rockos-web.js"></script>
+</body>
+</html>
