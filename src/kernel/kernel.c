@@ -427,9 +427,10 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         display_puts("[-] Unable to register exit test task.\n");
         audio_play_error_sound();
     }
-    if (!shell_is_installer_boot() &&
-        !task_create("ring3_test", ring3_test_task)) {
-        display_puts("[-] Unable to register Ring 3 test task.\n");
+    if (!shell_is_installer_boot() && (
+        !task_create("ring3_mem_test", ring3_memory_test_task) ||
+        !task_create("ring3_test", ring3_test_task))) {
+        display_puts("[-] Unable to register Ring 3 test tasks.\n");
         audio_play_error_sound();
     }
 
