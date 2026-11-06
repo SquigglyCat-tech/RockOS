@@ -18,6 +18,20 @@ graphical installer and a small interactive kernel environment.
 RockOS is work in progress and is currently intended for QEMU. Do not use the
 installer on a physical disk. Expect bugs (If you need them fixed just dm me @spaminhaler_30401 on Discord)
 
+## System requirements
+
+| | Minimum | Recommended |
+|---|---|---|
+| RAM | 3 GB | 13 GB |
+| Storage | 40 MB virtual disk (16 MiB install target + ISO) | 128 MB mainline disk |
+
+3 GB is the minimal requirement and 13 GB is the recommended amount for best
+performance and preparation for Wine being ported to RockOS. The kernel also
+needs the machine-readable framebuffer that Limine provides plus a 64-bit
+x86 CPU (or an x86-target emulator such as QEMU). Fine on 4 GB machines when
+the framebuffer resolution is low; 13 GB leaves room for large Wine prefix
+disk images and compile-time assets.
+
 ## Build and run
 
 The build uses GNU Make, an `x86_64-elf` GCC/binutils cross-toolchain, Python 3,
