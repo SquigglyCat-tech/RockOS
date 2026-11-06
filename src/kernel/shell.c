@@ -9,12 +9,27 @@
 #include "pci.h"
 #include "pic.h"
 #include "pmm.h"
+#include "rck.h"
 #include "ring3.h"
 #include "serial.h"
 #include "storage.h"
 #include "task.h"
 #include "timer.h"
 #include "tour.h"
+
+#define RCK_CREDITS_SAMPLE \
+    "window(\n" \
+    "txt.positioning = middle;\n" \
+    " txt(still being built);\n" \
+    "  btn.positioning = middle_bottom\n" \
+    "  wrp.btn1{\n" \
+    "   btn.txt (exit)\n" \
+    "    l\n" \
+    "   on click\n" \
+    "    on btn1 do \"exit_process\"\n" \
+    "     then wait\n" \
+    "    until done\n" \
+    "    )\n"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -2232,6 +2247,8 @@ static void shell_print_sysinfo(void) {
 static void shell_print_help(void) {
     shell_write("help      List supported commands\n");
     shell_write("tour      Start the RockOS Tour\n");
+    shell_write("credits   Run the built-in Credits.rck window\n");
+    shell_write("rck       Run an RCK script (see docs/RCK.md)\n");
     shell_write("clear     Clear and redraw the terminal\n");
     shell_write("mem       Show PMM memory statistics\n");
     shell_write("storage   Show block-device status and capacity\n");
@@ -2284,6 +2301,31 @@ static void shell_execute(void) {
         shell_print_help();
     } else if (command_is(command_buffer, "tour")) {
         tour_start();
+    } else if (command_is(command_buffer, "credits")) {
+        shell_draw_screen();
+        if (rck_run_source(RCK_CREDITS_SAMPLE)) {
+            /* pause a beat so the window stays visible */
+            for (uint32_t pause = 0;
+                pause < SHELL_TICKS_PER_SECOND * 2U;
+                pause++) {
+                asm volatile("pause" ::: "memory");
+            }
+            shell_draw_screen();
+        }
+        return;
+    } else if (shell_get_argument(command_buffer, "rck", argument,
+        sizeof(argument))) {
+        shell_draw_screen();
+        rck_run_path(argument);
+        shell_draw_screen();
+        return;
+    } else if (command_is(command_buffer, "rck self-test")) {
+        rck_self_test();
+        shell_draw_screen();
+        return;
+    } else if (command_is(command_buffer, "rck")) {
+        shell_write("Usage: rck path\n");
+        shell_write("rck self-test\n");
     } else if (command_is(command_buffer, "clear")) {
         shell_draw_screen();
         return;
