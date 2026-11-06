@@ -42,6 +42,11 @@ extern void ring3_enter(uintptr_t user_rip, uintptr_t user_rsp)
 static uintptr_t active_address_space;
 static uintptr_t active_code_page;
 static uintptr_t active_stack_page;
+/* virtual addresses the current session mapped its code/stack at -
+ * recorded per session so exit/fault teardown unmaps the right VAs */
+static uintptr_t ring3_active_code_va;
+static uintptr_t ring3_active_stack_va;
+static bool ring3_session_is_pe;
 
 static void ring3_write_hex(uint64_t value) {
     static const char digits[] = "0123456789ABCDEF";
@@ -134,6 +139,9 @@ static void ring3_enter_test_program(const uint8_t* program_start,
     }
 
     active_address_space = process->address_space;
+    ring3_active_code_va = RING3_TEST_CODE_ADDRESS;
+    ring3_active_stack_va = RING3_TEST_STACK_ADDRESS;
+    ring3_session_is_pe = false;
     if (!paging_map_user_page(active_address_space, RING3_TEST_CODE_ADDRESS,
             active_code_page, false)) {
         pmm_free((void*)active_code_page, 1);
@@ -212,6 +220,9 @@ static void ring3_enter_memory_test_program(const uint8_t* program_start,
         ring3_test_fail(process, "unable to synchronize TSS RSP0");
     }
     active_address_space = process->address_space;
+    ring3_active_code_va = RING3_MEMORY_CODE_ADDRESS;
+    ring3_active_stack_va = RING3_MEMORY_STACK_ADDRESS;
+    ring3_session_is_pe = false;
     if (!paging_map_user_page(active_address_space, RING3_MEMORY_CODE_ADDRESS,
             active_code_page, false) ||
         !paging_map_user_page(active_address_space,
@@ -261,17 +272,27 @@ static uint64_t ring3_rok_entry_offset;
  * the entry offset inside the section; the task maps the code page
  * there and enters ring 3. */
 #define RING3_PE_STACK_ADDRESS 0x40006000ULL
-#define RING3_PE_PAYLOAD_MAX 4096U
+#define RING3_PE_PAYLOAD_MAX (256U * 1024U)
 static uint8_t ring3_pe_payload[RING3_PE_PAYLOAD_MAX];
 static uint64_t ring3_pe_payload_size;
 static uintptr_t ring3_pe_code_address;
 static uint64_t ring3_pe_entry_offset;
+/* pages mapped by the session beyond the first code/stack page, freed
+ * on exit or fatal fault so multi-page exe images do not leak */
+#define RING3_PE_PAGES_MAX (RING3_PE_PAYLOAD_MAX / PMM_PAGE_SIZE)
+static uintptr_t ring3_pe_session_pages[RING3_PE_PAGES_MAX];
+static uint64_t ring3_pe_session_page_count;
 
 bool ring3_pe_stage(const uint8_t* payload, uint64_t payload_size,
     uintptr_t code_base_address, uint64_t entry_offset) {
     if (!payload || payload_size == 0 || payload_size > RING3_PE_PAYLOAD_MAX ||
-        entry_offset >= payload_size || code_base_address == 0) {
+        entry_offset >= payload_size || code_base_address == 0 ||
+        payload_size % PMM_PAGE_SIZE != 0) {
         return false;
+    }
+    ring3_pe_session_page_count = 0;
+    for (uint64_t index = 0; index < RING3_PE_PAGES_MAX; index++) {
+        ring3_pe_session_pages[index] = 0;
     }
     for (uint64_t index = 0; index < payload_size; index++) {
         ring3_pe_payload[index] = payload[index];
@@ -294,41 +315,79 @@ void ring3_pe_task(void) {
     if (!gdt_set_kernel_stack(kernel_stack_top)) {
         ring3_test_fail(process, "unable to synchronize TSS RSP0");
     }
-    active_code_page = (uintptr_t)pmm_alloc(1);
+    /* one stack page + one page per payload chunk */
+    uint64_t payload_pages = ring3_pe_payload_size / PMM_PAGE_SIZE;
     active_stack_page = (uintptr_t)pmm_alloc(1);
-    if (!active_code_page || !active_stack_page) {
-        if (active_code_page) pmm_free((void*)active_code_page, 1);
-        if (active_stack_page) pmm_free((void*)active_stack_page, 1);
-        active_code_page = 0;
+    active_code_page = 0;
+    ring3_pe_session_page_count = 0;
+    if (!active_stack_page) {
         active_stack_page = 0;
-        ring3_test_fail(process, "unable to allocate .exe user pages");
+        ring3_test_fail(process, "unable to allocate .exe user stack page");
     }
-    clear_page((void*)active_code_page);
     clear_page((void*)active_stack_page);
-    if (ring3_pe_payload_size == 0 ||
-        ring3_pe_payload_size > PMM_PAGE_SIZE) {
-        ring3_test_fail(process, "invalid staged .exe payload");
-    }
-    for (uint64_t index = 0; index < ring3_pe_payload_size; index++) {
-        ((uint8_t*)active_code_page)[index] = ring3_pe_payload[index];
+    if (payload_pages > RING3_PE_PAGES_MAX) {
+        payload_pages = RING3_PE_PAGES_MAX;
     }
     active_address_space = process->address_space;
-    if (!paging_map_user_page(active_address_space,
-            ring3_pe_code_address, active_code_page, false) ||
-        !paging_map_user_page(active_address_space,
-            RING3_PE_STACK_ADDRESS, active_stack_page, true)) {
-        if (active_code_page) {
-            release_user_mapping(active_address_space,
-                ring3_pe_code_address, active_code_page);
+    for (uint64_t page_index = 0; page_index < payload_pages; page_index++) {
+        uintptr_t page = (uintptr_t)pmm_alloc(1);
+        if (!page) {
+            while (ring3_pe_session_page_count > 0) {
+                uintptr_t released =
+                    ring3_pe_session_pages[--ring3_pe_session_page_count];
+                release_user_mapping(active_address_space,
+                    ring3_pe_code_address +
+                        ring3_pe_session_page_count * PMM_PAGE_SIZE,
+                    released);
+            }
+            pmm_free((void*)active_stack_page, 1);
+            active_stack_page = 0;
+            active_address_space = 0;
+            ring3_test_fail(process, "unable to allocate .exe image pages");
         }
-        if (active_stack_page) {
-            release_user_mapping(active_address_space,
-                RING3_PE_STACK_ADDRESS, active_stack_page);
+        for (size_t byte_index = 0; byte_index < PMM_PAGE_SIZE;
+            byte_index++) {
+            ((uint8_t*)page)[byte_index] = ring3_pe_payload[
+                page_index * PMM_PAGE_SIZE + byte_index];
         }
-        active_address_space = 0;
+        uintptr_t mapping = ring3_pe_code_address +
+            page_index * PMM_PAGE_SIZE;
+        if (!paging_map_user_page(active_address_space, mapping, page,
+            true)) {
+            pmm_free((void*)page, 1);
+            while (ring3_pe_session_page_count > 0) {
+                uintptr_t released =
+                    ring3_pe_session_pages[--ring3_pe_session_page_count];
+                release_user_mapping(active_address_space,
+                    ring3_pe_code_address +
+                        ring3_pe_session_page_count * PMM_PAGE_SIZE,
+                    released);
+            }
+            pmm_free((void*)active_stack_page, 1);
+            active_stack_page = 0;
+            active_address_space = 0;
+            ring3_test_fail(process, "unable to map .exe image pages");
+        }
+        ring3_pe_session_pages[ring3_pe_session_page_count++] = page;
+    }
+    active_code_page = ring3_pe_session_pages[0];
+    ring3_active_code_va = ring3_pe_code_address;
+    ring3_active_stack_va = RING3_PE_STACK_ADDRESS;
+    if (!paging_map_user_page(active_address_space, RING3_PE_STACK_ADDRESS,
+        active_stack_page, true)) {
+        while (ring3_pe_session_page_count > 0) {
+            uintptr_t released =
+                ring3_pe_session_pages[--ring3_pe_session_page_count];
+            release_user_mapping(active_address_space,
+                ring3_pe_code_address +
+                    ring3_pe_session_page_count * PMM_PAGE_SIZE,
+                released);
+        }
         active_code_page = 0;
+        pmm_free((void*)active_stack_page, 1);
         active_stack_page = 0;
-        ring3_test_fail(process, "unable to map .exe user pages");
+        active_address_space = 0;
+        ring3_test_fail(process, "unable to map .exe user stack page");
     }
     process->user_stack = RING3_PE_STACK_ADDRESS + PMM_PAGE_SIZE;
     display_puts("[+] .exe run: entering user mode...\n");
@@ -384,6 +443,9 @@ void ring3_rok_task(void) {
         ((uint8_t*)active_code_page)[index] = ring3_rok_payload[index];
     }
     active_address_space = process->address_space;
+    ring3_active_code_va = RING3_ROK_CODE_ADDRESS;
+    ring3_active_stack_va = RING3_ROK_STACK_ADDRESS;
+    ring3_session_is_pe = false;
     if (!paging_map_user_page(active_address_space, RING3_ROK_CODE_ADDRESS,
             active_code_page, false) ||
         !paging_map_user_page(active_address_space,
@@ -559,14 +621,27 @@ uint64_t ring3_syscall_dispatch(uint64_t syscall_number, uint64_t argument) {
     display_puts("[+] Ring 3 test: returned to kernel\n");
 
     ring3_memory_cleanup();
-    release_user_mapping(active_address_space, RING3_TEST_STACK_ADDRESS,
-        active_stack_page);
-    release_user_mapping(active_address_space, RING3_TEST_CODE_ADDRESS,
-        active_code_page);
+    while (ring3_pe_session_page_count > 0) {
+        uintptr_t released =
+            ring3_pe_session_pages[--ring3_pe_session_page_count];
+        release_user_mapping(active_address_space,
+            ring3_pe_code_address +
+                ring3_pe_session_page_count * PMM_PAGE_SIZE, released);
+    }
+    ring3_pe_session_page_count = 0;
+    if (!ring3_session_is_pe) {
+        release_user_mapping(active_address_space, ring3_active_stack_va,
+            active_stack_page);
+        release_user_mapping(active_address_space, ring3_active_code_va,
+            active_code_page);
+    }
     process->user_stack = 0;
     active_address_space = 0;
     active_code_page = 0;
     active_stack_page = 0;
+    ring3_active_code_va = 0;
+    ring3_active_stack_va = 0;
+    ring3_session_is_pe = false;
     task_exit();
 }
 
@@ -593,10 +668,23 @@ void ring3_fault_dispatch(uint64_t vector, uint64_t error_code,
     }
     display_putchar('\n');
 
-    release_user_mapping(active_address_space, RING3_TEST_STACK_ADDRESS,
-        active_stack_page);
-    release_user_mapping(active_address_space, RING3_TEST_CODE_ADDRESS,
-        active_code_page);
+    while (ring3_pe_session_page_count > 0) {
+        uintptr_t released =
+            ring3_pe_session_pages[--ring3_pe_session_page_count];
+        release_user_mapping(active_address_space,
+            ring3_pe_code_address +
+                ring3_pe_session_page_count * PMM_PAGE_SIZE, released);
+    }
+    ring3_pe_session_page_count = 0;
+    if (!ring3_session_is_pe) {
+        release_user_mapping(active_address_space, ring3_active_stack_va,
+            active_stack_page);
+        release_user_mapping(active_address_space, ring3_active_code_va,
+            active_code_page);
+    }
+    ring3_active_code_va = 0;
+    ring3_active_stack_va = 0;
+    ring3_session_is_pe = false;
     process->user_stack = 0;
     active_address_space = 0;
     active_code_page = 0;
