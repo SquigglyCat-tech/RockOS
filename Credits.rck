@@ -1,0 +1,12 @@
+window(
+txt.positioning = middle;
+ txt(still being built);
+  btn.positioning = middle_bottom
+  wrp.btn1{
+   btn.txt (exit)
+    l
+   on click 
+    on btn1 do "exit_process" 
+     then wait 
+    until done
+    )
