@@ -1,0 +1,80 @@
+name: build-iso
+
+# Builds the RockOS bootable ISO (64-bit + 32-bit kernels, Limine BIOS/UEFI
+# boot, installer image) from source — no PowerShell required: the
+# committed src/drivers/ui_assets.h is used as-is.
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  iso:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain and ISO tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-x86-64-linux-gnu gcc-multilib xorriso python3
+
+      - name: Fetch Limine bootloader binaries
+        run: |
+          mkdir -p /tmp/limine
+          curl -fsSL \
+            https://github.com/Limine-Bootloader/Limine/releases/download/v12.9.6/limine-binary.tar.gz \
+            | tar -xz -C /tmp/limine
+          find /tmp/limine -maxdepth 2 -type f | sort
+          echo "LIMINE_DIR=$(find /tmp/limine -name limine-bios.sys | head -1 | xargs dirname)" >> "$GITHUB_ENV"
+
+      - name: Use committed UI assets (skip PowerShell regeneration)
+        run: touch src/drivers/ui_assets.h
+
+      - name: Build the limine host tool
+        run: |
+          make -C "$LIMINE_DIR" limine
+          "$LIMINE_DIR/limine" --version || true
+
+      - name: Build ISO (x86_64 + i386 kernels)
+        run: |
+          export TARGET64=x86_64-linux-gnu
+          make -j2 all \
+            LIMINE_TOOL="$LIMINE_DIR/limine" \
+            LIMINE_DATA_DIR="$LIMINE_DIR"
+          ls -lh
+        env:
+          PYTHON: python3
+
+      - name: Smoke-test ISO structure
+        run: |
+          test -f "rockosdualbootv.1.iso"
+          test -f iso/boot/rockos.bin
+          test -f iso/boot/rockos32.bin
+          test -f iso/boot/rockos-install.img
+          grep -q "RockOS Boot Manager" iso/boot/limine.conf
+          echo "ISO contents OK"
+
+      - name: Upload ISO artifact
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rockos-iso
+          path: |
+            rockosdualbootv.1.iso
+          if-no-files-found: error
+
+      - name: Attach ISO to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload "$GITHUB_REF_NAME" rockosdualbootv.1.iso
+        env:
+          GH_TOKEN: ${{ github.token }}
