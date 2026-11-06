@@ -19,6 +19,8 @@
 #include "pmm.h"
 #include "network.h"
 #include "rok.h"
+#include "pe_run.h"
+#include "pe_sample32.h"
 
 /* Builtin sample .rok: validates the self-contained demo path
  * (`run builtin`). Payload prints 'R' through the layer 0 syscall and
@@ -2589,6 +2591,7 @@ static void shell_print_help(void) {
     shell_write("audio     Show AC'97 device and playback diagnostics\n");
     shell_write("ring3fault Trigger the isolated Ring 3 fault test\n");
     shell_write("run path  Run a RockOS native .rok executable (or `run builtin` for the demo)\n");
+    shell_write("runexe path  Launch a PE32 .exe image (or `runexe builtin` for the demo); no imports yet\n");
     shell_write("installer Check for a safe dedicated install disk\n");
     shell_write("version   Show RockOS version and kernel identity\n");
     shell_write("sysinfo   Show a compact system summary\n");
@@ -2754,6 +2757,40 @@ static void shell_execute(void) {
         }
         if (!task_create("rok_run", ring3_rok_task)) {
             shell_write("run: unable to spawn the interpreter task\n");
+        }
+        shell_draw_screen();
+        return;
+    } else if (shell_get_argument(command_buffer, "runexe", argument,
+        sizeof(argument))) {
+        shell_draw_screen();
+        const uint8_t* exe_blob = 0;
+        size_t exe_blob_size = 0;
+        if (command_is(argument, "builtin")) {
+            exe_blob = (const uint8_t*)pe_sample32_bytes;
+            exe_blob_size = PE_SAMPLE32_NUM_WORDS * 2;
+            shell_write("Staging built-in PE32 sample...\n");
+        } else {
+            uint32_t file_size = 0;
+            if (filesystem_stat(argument, 0) != 0) {
+                shell_write("runexe: file not found: ");
+                shell_write(argument);
+                shell_write("\n");
+                return;
+            }
+            if (filesystem_read(argument, shell_copy_buffer,
+                sizeof(shell_copy_buffer), &file_size) != 0) {
+                shell_write("runexe: unable to read file: ");
+                shell_write(argument);
+                shell_write("\n");
+                return;
+            }
+            exe_blob = shell_copy_buffer;
+            exe_blob_size = file_size;
+        }
+        if (!pe_run_stage_and_launch(exe_blob, exe_blob_size)) {
+            shell_write("runexe: ");
+            shell_write(pe_run_error());
+            shell_write("\n");
         }
         shell_draw_screen();
         return;

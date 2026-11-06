@@ -255,6 +255,89 @@ static uint8_t ring3_rok_payload[ROK_CODE_SIZE_MAX];
 static uint64_t ring3_rok_payload_size;
 static uint64_t ring3_rok_entry_offset;
 
+/* ---- PE32 (.exe) sessions (Wine layer 1b) ----
+ * Same layer-0 syscall surface as .rok runs. The loader (pe_run.c)
+ * stages a single section payload at its image_base+section-rva with
+ * the entry offset inside the section; the task maps the code page
+ * there and enters ring 3. */
+#define RING3_PE_STACK_ADDRESS 0x40006000ULL
+#define RING3_PE_PAYLOAD_MAX 4096U
+static uint8_t ring3_pe_payload[RING3_PE_PAYLOAD_MAX];
+static uint64_t ring3_pe_payload_size;
+static uintptr_t ring3_pe_code_address;
+static uint64_t ring3_pe_entry_offset;
+
+bool ring3_pe_stage(const uint8_t* payload, uint64_t payload_size,
+    uintptr_t code_base_address, uint64_t entry_offset) {
+    if (!payload || payload_size == 0 || payload_size > RING3_PE_PAYLOAD_MAX ||
+        entry_offset >= payload_size || code_base_address == 0) {
+        return false;
+    }
+    for (uint64_t index = 0; index < payload_size; index++) {
+        ring3_pe_payload[index] = payload[index];
+    }
+    ring3_pe_payload_size = payload_size;
+    ring3_pe_code_address = code_base_address;
+    ring3_pe_entry_offset = entry_offset;
+    return true;
+}
+
+void ring3_pe_task(void) {
+    task_t* task = task_get_current();
+    process_t* process = process_get_current();
+    if (!task || !process || !process->address_space ||
+        task->kernel_stack_base == 0) {
+        ring3_test_fail(process, "no current task address space or kernel stack");
+    }
+    uintptr_t kernel_stack_top =
+        (task->kernel_stack_base + task->kernel_stack_size) & ~(uintptr_t)0xF;
+    if (!gdt_set_kernel_stack(kernel_stack_top)) {
+        ring3_test_fail(process, "unable to synchronize TSS RSP0");
+    }
+    active_code_page = (uintptr_t)pmm_alloc(1);
+    active_stack_page = (uintptr_t)pmm_alloc(1);
+    if (!active_code_page || !active_stack_page) {
+        if (active_code_page) pmm_free((void*)active_code_page, 1);
+        if (active_stack_page) pmm_free((void*)active_stack_page, 1);
+        active_code_page = 0;
+        active_stack_page = 0;
+        ring3_test_fail(process, "unable to allocate .exe user pages");
+    }
+    clear_page((void*)active_code_page);
+    clear_page((void*)active_stack_page);
+    if (ring3_pe_payload_size == 0 ||
+        ring3_pe_payload_size > PMM_PAGE_SIZE) {
+        ring3_test_fail(process, "invalid staged .exe payload");
+    }
+    for (uint64_t index = 0; index < ring3_pe_payload_size; index++) {
+        ((uint8_t*)active_code_page)[index] = ring3_pe_payload[index];
+    }
+    active_address_space = process->address_space;
+    if (!paging_map_user_page(active_address_space,
+            ring3_pe_code_address, active_code_page, false) ||
+        !paging_map_user_page(active_address_space,
+            RING3_PE_STACK_ADDRESS, active_stack_page, true)) {
+        if (active_code_page) {
+            release_user_mapping(active_address_space,
+                ring3_pe_code_address, active_code_page);
+        }
+        if (active_stack_page) {
+            release_user_mapping(active_address_space,
+                RING3_PE_STACK_ADDRESS, active_stack_page);
+        }
+        active_address_space = 0;
+        active_code_page = 0;
+        active_stack_page = 0;
+        ring3_test_fail(process, "unable to map .exe user pages");
+    }
+    process->user_stack = RING3_PE_STACK_ADDRESS + PMM_PAGE_SIZE;
+    display_puts("[+] .exe run: entering user mode...\n");
+    display_puts("[+] .exe run output: ");
+    paging_load_address_space(active_address_space);
+    ring3_enter(ring3_pe_code_address + ring3_pe_entry_offset,
+        RING3_PE_STACK_ADDRESS + PMM_PAGE_SIZE);
+}
+
 bool ring3_rok_stage(const uint8_t* payload, uint64_t payload_size,
     uint64_t entry_offset, bool payload_is_64bit) {
     if (!payload || payload_size == 0 ||
