@@ -14,7 +14,7 @@
  * Directory entry: 32 bytes (used, type, inode, 27-char name) = 16 per sector.
  * Inode 0 is the root directory.
  *
- * Static RAM used: about 3 KiB of sector buffers. No malloc/free.
+ * Static RAM used: about 7 KiB of sector buffers (incl. read-ahead). No malloc/free.
  * No journaling: a power cut in the middle of an operation can leak
  * sectors, but never makes the directory tree point at garbage.
  */
@@ -209,6 +209,55 @@ static int sec_check(uint32_t lba)
     return FS_OK;
 }
 
+/* ------------------------------------------------------------------ */
+/* Sequential read-ahead window for file data                         */
+/* ------------------------------------------------------------------ */
+/* One hop-ahead window: a miss reads FS_RA_SECTORS consecutive sectors
+ * in ONE block transfer instead of one 512-byte read per hit. Sequential
+ * loads (Wine PE loader, shell `cat`, installer) then cost ~1/8 of the
+ * I/O exits per sector. The window is dropped on any write, which keeps
+ * it coherent without a real page cache. */
+#define FS_RA_SECTORS 8u
+
+static uint8_t  g_ra_buf[FS_RA_SECTORS][FS_SECTOR_SIZE] __attribute__((aligned(4)));
+static uint32_t g_ra_base;                /* LBA of g_ra_buf[0]            */
+static uint8_t  g_ra_count;               /* valid sectors in the window   */
+static uint8_t  g_ra_valid;
+
+/* Read one data sector; *out points into the read-ahead window. */
+static int data_sector_read(uint32_t lba, uint8_t **out)
+{
+    int r = sec_check(lba);
+    if (r) return r;
+
+    if (g_ra_valid &&
+        lba >= g_ra_base &&
+        lba - g_ra_base < (uint32_t)g_ra_count) {
+        *out = g_ra_buf[lba - g_ra_base];
+        return FS_OK;
+    }
+
+    /* Shrink the window at the end of the region / before reserved LBA. */
+    uint32_t window = 0;
+    while (window < FS_RA_SECTORS && sec_check(lba + window) == FS_OK) {
+        window++;
+    }
+    if (window == 0) return FS_ERR_RANGE;
+
+    const block_device_t *device = storage_get_device();
+    if (!device) return FS_ERR_IO;
+    if (block_read(device, lba, window, g_ra_buf) != BLOCK_RESULT_OK) {
+        g_ra_valid = 0;
+        return FS_ERR_IO;
+    }
+    g_io_reads += window;
+    g_ra_base = lba;
+    g_ra_count = (uint8_t)window;
+    g_ra_valid = 1;
+    *out = g_ra_buf[0];
+    return FS_OK;
+}
+
 static int sec_read(uint32_t lba, void *buf)
 {
     int r = sec_check(lba);
@@ -224,8 +273,10 @@ static int sec_write(uint32_t lba, const void *buf)
     if (r) return r;
     if (filesystem_storage_write(lba, buf) != 0) return FS_ERR_IO;
     g_io_writes++;
+    g_ra_valid = 0;                       /* any write invalidates the window */
     return FS_OK;
 }
+
 
 /* ------------------------------------------------------------------ */
 /* Allocation bitmap                                                   */
@@ -481,9 +532,10 @@ static int file_read_at(uint16_t ino, uint32_t off, void *buf, uint32_t len, uin
             *out = done;
             return r;
         } else {
-            r = sec_read(lba, g_data_buf);
+            uint8_t *src = 0;
+            r = data_sector_read(lba, &src);
             if (r) { *out = done; return r; }
-            fs_memcpy(dst + done, g_data_buf + bo, n);
+            fs_memcpy(dst + done, src + bo, n);
         }
         done += n;
     }

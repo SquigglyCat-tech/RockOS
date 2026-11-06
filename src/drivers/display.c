@@ -204,6 +204,12 @@ static void put_pixel_untracked(uint32_t x, uint32_t y, uint32_t color) {
     size_t offset = (size_t)y * framebuffer_pitch +
         (size_t)x * framebuffer_bytes_per_pixel;
     uint8_t* shadow_pixel = framebuffer_shadow + offset;
+    if (framebuffer_bytes_per_pixel == 4) {
+        /* One 32-bit store instead of four byte stores: 4x fewer
+         * memory writes per pixel. 4-byte pixels are always aligned. */
+        *(uint32_t*)(void*)shadow_pixel = color;
+        return;
+    }
     for (uint8_t byte = 0; byte < framebuffer_bytes_per_pixel; byte++) {
         shadow_pixel[byte] = (uint8_t)(color >> (byte * 8));
     }
@@ -217,6 +223,19 @@ static void put_pixel(uint32_t x, uint32_t y, uint32_t color) {
 
 static void fill_rect_untracked(uint32_t x, uint32_t y, uint32_t width,
     uint32_t height, uint32_t color) {
+    if (framebuffer_bytes_per_pixel == 4) {
+        /* Fast path: one 32-bit fill per pixel. Large fills happen on
+         * every window paint, so this is one of the hottest paths. */
+        for (uint32_t row = y; row < y + height; row++) {
+            uint32_t* pixel = (uint32_t*)(void*)(framebuffer_shadow +
+                (size_t)row * framebuffer_pitch +
+                (size_t)x * framebuffer_bytes_per_pixel);
+            for (uint32_t column = 0; column < width; column++) {
+                pixel[column] = color;
+            }
+        }
+        return;
+    }
     for (uint32_t row = y; row < y + height; row++) {
         uint8_t* pixel = framebuffer_shadow + (size_t)row *
             framebuffer_pitch + (size_t)x * framebuffer_bytes_per_pixel;
@@ -845,11 +864,7 @@ bool display_fill_rect_rgb(uint32_t x, uint32_t y, uint32_t width,
 
 static uint32_t shadow_pixel_value(size_t offset) {
     if (framebuffer_bytes_per_pixel == 4) {
-        const uint8_t* pixel = framebuffer_shadow + offset;
-        return (uint32_t)pixel[0] |
-            ((uint32_t)pixel[1] << 8) |
-            ((uint32_t)pixel[2] << 16) |
-            ((uint32_t)pixel[3] << 24);
+        return *(const uint32_t*)(const void*)(framebuffer_shadow + offset);
     }
     uint32_t pixel = 0;
     for (uint8_t byte = 0; byte < framebuffer_bytes_per_pixel; byte++) {
