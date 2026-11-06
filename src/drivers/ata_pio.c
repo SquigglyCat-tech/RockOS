@@ -90,6 +90,25 @@ static void ata_delay_400ns(uint8_t channel) {
     (void)inb(ctrl);
 }
 
+static inline void ata_read_words(uint16_t port, uint16_t* buffer,
+    size_t words) {
+    /* rep insw is a single string instruction for the whole sector
+     * transfer; the per-word C loop re-entered the emulator's I/O path
+     * hundreds of times per sector. */
+    asm volatile("rep insw"
+        : "+D"(buffer), "+c"(words)
+        : "d"(port)
+        : "memory");
+}
+
+static inline void ata_write_words(uint16_t port, const uint16_t* buffer,
+    size_t words) {
+    asm volatile("rep outsw"
+        :
+        : "d"(port), "S"(buffer), "c"(words)
+        : "memory");
+}
+
 static block_result_t ata_wait_status(uint8_t channel, bool require_data) {
     uint16_t cmd = ata_channels[channel & 1u].cmd;
     for (uint32_t attempt = 0; attempt < ATA_POLL_LIMIT; attempt++) {
@@ -163,11 +182,9 @@ static block_result_t ata_read(void* context, uint64_t lba,
         if (result != BLOCK_RESULT_OK) break;
 
         size_t byte_offset = (size_t)sector * BLOCK_SECTOR_SIZE;
-        for (uint32_t word = 0; word < ATA_WORDS_PER_SECTOR; word++) {
-            uint16_t value = inw(ch->data);
-            bytes[byte_offset + word * 2] = (uint8_t)value;
-            bytes[byte_offset + word * 2 + 1] = (uint8_t)(value >> 8);
-        }
+        ata_read_words(ch->data,
+            (uint16_t*)(void*)(bytes + byte_offset),
+            ATA_WORDS_PER_SECTOR);
 
     }
 
@@ -199,11 +216,9 @@ static block_result_t ata_write(void* context, uint64_t lba,
         if (result != BLOCK_RESULT_OK) break;
 
         size_t byte_offset = (size_t)sector * BLOCK_SECTOR_SIZE;
-        for (uint32_t word = 0; word < ATA_WORDS_PER_SECTOR; word++) {
-            uint16_t value = (uint16_t)bytes[byte_offset + word * 2] |
-                ((uint16_t)bytes[byte_offset + word * 2 + 1] << 8);
-            outw(ch->data, value);
-        }
+        ata_write_words(ch->data,
+            (const uint16_t*)(const void*)(bytes + byte_offset),
+            ATA_WORDS_PER_SECTOR);
 
     }
 
@@ -273,9 +288,7 @@ static block_result_t ata_identify(ata_drive_t* drive, uint8_t channel,
     }
     if (!data_ready) return BLOCK_RESULT_NO_DEVICE;
 
-    for (uint32_t word = 0; word < 256; word++) {
-        identify_words[word] = inw(ch->data);
-    }
+    ata_read_words(ch->data, identify_words, 256);
 
     /* Some emulators (v86) do not set the IDENTIFY "LBA supported" bit
      * (word 49 bit 9) even though they report a valid LBA28 sector count in
