@@ -70,3 +70,31 @@ syscall surface (int 0x80 exit/putchar/mmap/munmap), a smaller loader.
   `run builtin` (self-contained demo that prints "R" via putchar and
   exits). Executed in ring 3 by `ring3_rok_task` at dedicated code and
   stack addresses.
+
+## Layer 1c addition: base relocations (multi-section PE loads)
+
+The layer-1b envelope was widened: any ImageBase, up to 16 sections,
+SizeOfImage up to 256 KiB, machine matching the running kernel, no
+imports (kernel32 still next). New `pe.c` pieces, all host-verified:
+
+- `pe_image_t` now carries the optional-header data directories
+  (NumberOfRvaAndSizes at offset 92 for PE32 / 108 for PE32+, entries
+  from offset 96 / 112).
+- `pe_rva_sourced` resolves an RVA (headers region or file-backed
+  section) to a file offset and validates the byte count.
+- `pe_image_snapshot` builds the runtime memory image (headers raw,
+  sections at their RVAs, rest zero-filled).
+- `pe_relocate` walks the relocation table and applies type
+  0 (padding), 3 (PE32 HIGHLOW), 10 (PE32+ DIR64) fixups with
+  `delta = RING3_PE_BASE - ImageBase`; delta 0 is idempotent, images
+  with a nonzero fixup set are refused only when delta would corrupt
+  bounds.
+- `ring3_pe_task` maps every snapshot page at RING3_PE_BASE and tears
+  down all session pages (plus the stack) on exit or fault; paths use
+  per-session code/stack VAs instead of hardcoded test addresses.
+- New fixture generator `tools/make_pe_reloc32.py` emits
+  `src/kernel/pe_reloc32.h`: one-section .text at RVA 0x1000,
+  ImageBase 0x400000, last-WORD image pointer 0x400110 at RVA 0x10F0
+  fixed to 0x60000110, one HIGHLOW entry block at RVA 0x1080.
+- `tests/pe_run_host_test.c` now covers parse + envelope (1c form) +
+  snapshot + rva lookup + relocation (all PASS: 27 checks).
