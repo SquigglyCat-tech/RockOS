@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   iso:
@@ -66,7 +66,6 @@ jobs:
           echo "ISO contents OK"
 
       - name: Upload ISO artifact
-        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
           name: rockos-iso
@@ -74,7 +73,27 @@ jobs:
             rockosdualbootv.1.iso
           if-no-files-found: error
 
-      - name: Attach ISO to release
+      # Automated release: every successful build on main creates
+      # release "automated release v0.0.<run>" tagged v0.0.<run>
+      # (run numbers are monotonic and unique), with the ISO attached.
+      - name: Create automated release
+        if: github.ref_type != 'tag'
+        run: |
+          gh release view "v0.0.$GITHUB_RUN_NUMBER" >/dev/null 2>&1 ||           gh release create "v0.0.$GITHUB_RUN_NUMBER" \
+            --title "automated release v0.0.$GITHUB_RUN_NUMBER" \
+            --notes "Automated build from commit $GITHUB_SHA — branch: main (ISO with the 64-bit + 32-bit kernels and the Limine installer image)." \
+            --prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload ISO artifact (auto release)
+        if: github.ref_type != 'tag'
+        run: |
+          gh release upload "v0.0.$GITHUB_RUN_NUMBER" rockosdualbootv.1.iso --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Attach ISO to tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         run: gh release upload "$GITHUB_REF_NAME" rockosdualbootv.1.iso
         env:
