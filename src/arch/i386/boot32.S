@@ -19,7 +19,7 @@
 /* Boot diagnostics: write a stage letter to VGA text (top-left row) and to
  * COM1 so a black screen can be narrowed down (R = entered _start,
  * P = paging on, K = calling kernel_main). Set BOOT_DIAG to 0 to remove. */
-.set BOOT_DIAG, 1
+.set BOOT_DIAG, 0
 .macro DIAG_MARK col, ch
 .if BOOT_DIAG
     movw $(0x0F00 | \ch), (0xB8000 + \col * 2)

@@ -98,7 +98,7 @@ static void task_b_entry(void) {
 static void task_a_entry(void) {
     volatile uint64_t work = 0;
     for (;;) {
-        for (uint32_t spin = 0; spin < 0x10000U; spin++) work++;
+        for (uint32_t spin = 0; spin < 0x1000U; spin++) work++;
         task_a_progress++;
         task_sleep_ticks(2);
     }
@@ -107,7 +107,7 @@ static void task_a_entry(void) {
 static void task_b_entry(void) {
     volatile uint64_t work = 0;
     for (;;) {
-        for (uint32_t spin = 0; spin < 0x10000U; spin++) work++;
+        for (uint32_t spin = 0; spin < 0x1000U; spin++) work++;
         task_b_progress++;
         task_sleep_ticks(2);
     }
@@ -291,7 +291,8 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     serial_write_hex(boot_info_address);
     serial_write_string("\n");
 
-    // 2. Initialize display subsystem
+    // 2. Avoid legacy VGA writes while the bootloader framebuffer is active.
+    display_set_boot_framebuffer_hint(boot_info_address);
     display_init();
 
     // 3. Print startup banner
@@ -313,10 +314,12 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
     serial_write_string("[boot] PMM initialized\n[boot] initializing framebuffer\n");
     if (display_init_framebuffer(boot_info_address)) {
         serial_write_string("[boot] framebuffer initialization succeeded\n");
+        display_run_fill_benchmark();
         display_set_color(COLOR_LIGHT_GREEN, COLOR_BLACK);
         display_puts("[+] Framebuffer graphics enabled.\n");
         display_set_color(COLOR_LIGHT_GRAY, COLOR_BLACK);
     } else {
+        display_set_boot_framebuffer_hint(0);
         serial_write_string("[boot] framebuffer initialization failed: ");
         serial_write_string(display_framebuffer_status());
         serial_write_string("\n");
