@@ -13,6 +13,7 @@
 #include "../include/pe_run.h"
 #include "../src/kernel/pe_sample32.h"
 #include "../src/kernel/pe_reloc32.h"
+#include "../src/kernel/pe_import32.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -144,6 +145,81 @@ int main(void) {
     /* a snapshot smaller than the fixup target must be refused */
     CHECK(!pe_relocate(&rimage, snapshot, 0x10F0,
         rblob, rsize, delta), "bounds-checked relocation");
+
+    /* --- layer 1d: import-bearing fixture --- */
+    const uint8_t* iblob = (const uint8_t*)pe_import32_bytes;
+    size_t isize = PE_IMPORT32_NUM_WORDS * 2;
+    pe_image_t iimage;
+    CHECK(pe_parse(iblob, isize, &iimage),
+        iimage.error ? iimage.error : "import fixture parses");
+    CHECK(iimage.import_count == 2, "two import functions parsed");
+    CHECK(iimage.import_rva == PE_IMPORT32_IAT_RVA, "IAT RVA parsed");
+    CHECK(strcmp(iimage.import_dll, "kernel32.dll") == 0,
+        "kernel32.dll recognized (case-folded)");
+    CHECK(strcmp(iimage.import_names[0], "WriteFile") == 0 &&
+        strcmp(iimage.import_names[1], "ExitProcess") == 0,
+        "import names in arrival order");
+    CHECK(pe_run_can_load(&iimage),
+        "kernel32 import fixture satisfies the 1d envelope");
+
+    uint8_t isnapshot[PE_IMPORT32_SIZE_OF_IMAGE + 0x1000];
+    memset(isnapshot, 0xCC, sizeof(isnapshot));
+    CHECK(pe_image_snapshot(&iimage, iblob, isize, isnapshot,
+        PE_IMPORT32_SIZE_OF_IMAGE), "import fixture snapshot builds");
+    CHECK(pe_run_prepare_imports(&iimage, isnapshot,
+        sizeof(isnapshot)), "import table prepared");
+
+    /* stub area starts at SizeOfImage, 16-byte aligned */
+    static const uint8_t writefile_stub[] = {
+        0x8B, 0x74, 0x24, 0x04, 0x8B, 0x54, 0x24, 0x08,
+        0x8B, 0x4C, 0x24, 0x0C, 0x8B, 0x7C, 0x24, 0x10,
+        0xBB, 0x02, 0x00, 0x00, 0x00,
+        0xB8, 0x07, 0x00, 0x00, 0x00,
+        0xCD, 0x80, 0xC2, 0x10, 0x00,
+    };
+    static const uint8_t exitprocess_stub[] = {
+        0x8B, 0x74, 0x24, 0x04,
+        0xBB, 0x00, 0x00, 0x00, 0x00,
+        0xB8, 0x07, 0x00, 0x00, 0x00,
+        0xCD, 0x80, 0xC2, 0x04, 0x00,
+    };
+    CHECK(memcmp(isnapshot + PE_IMPORT32_SIZE_OF_IMAGE, writefile_stub,
+        sizeof(writefile_stub)) == 0, "WriteFile stub bytes");
+    CHECK(memcmp(isnapshot + PE_IMPORT32_SIZE_OF_IMAGE + 0x20,
+        exitprocess_stub, sizeof(exitprocess_stub)) == 0,
+        "ExitProcess stub bytes (16-byte aligned slot)");
+    {
+        uint32_t iat0 = (uint32_t)isnapshot[0x1050] |
+            ((uint32_t)isnapshot[0x1051] << 8) |
+            ((uint32_t)isnapshot[0x1052] << 16) |
+            ((uint32_t)isnapshot[0x1053] << 24);
+        uint32_t iat1 = (uint32_t)isnapshot[0x1054] |
+            ((uint32_t)isnapshot[0x1055] << 8) |
+            ((uint32_t)isnapshot[0x1056] << 16) |
+            ((uint32_t)isnapshot[0x1057] << 24);
+        CHECK(iat0 == PE_IMPORT32_SIZE_OF_IMAGE,
+            "IAT slot 0 patched to the WriteFile stub");
+        CHECK(iat1 == PE_IMPORT32_SIZE_OF_IMAGE + 0x20,
+            "IAT slot 1 patched to the ExitProcess stub");
+    }
+
+    /* envelope rejections for imports */
+    pe_image_t iprobe = iimage;
+    strcpy(iprobe.import_dll, "user32.dll");
+    CHECK(!pe_run_can_load(&iprobe), "unknown DLL refused");
+    iprobe = iimage;
+    strcpy(iprobe.import_names[0], "CreateFileA");
+    CHECK(!pe_run_can_load(&iprobe), "unknown function refused");
+
+    /* unknown name through the prepare path too */
+    iprobe = iimage;
+    strcpy(iprobe.import_names[1], "BogusFn");
+    CHECK(!pe_run_prepare_imports(&iprobe, isnapshot,
+        sizeof(isnapshot)), "unknown name refused at prepare");
+    strcpy(iprobe.import_names[1], "ExitProcess");
+    iprobe.import_count = PE_IMPORT_MAX + 1;
+    CHECK(!pe_run_prepare_imports(&iprobe, isnapshot,
+        sizeof(isnapshot)), "oversized import list refused");
 
     if (failures) {
         printf("pe_run_host_test: %d case(s) FAILED\n", failures);

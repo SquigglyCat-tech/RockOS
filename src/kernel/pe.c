@@ -61,6 +61,28 @@ const char* pe_machine_name(uint16_t machine) {
     }
 }
 
+static bool pe_rva_sourced_raw(const pe_image_t* image, uint32_t rva,
+    uint32_t count, uint32_t* file_offset) {
+    if (!image || !file_offset) return false;
+    /* headers region serves RVAs strictly below SizeOfHeaders */
+    if (rva < image->size_of_headers) {
+        if (count > image->size_of_headers - rva) return false;
+        *file_offset = rva;
+        return true;
+    }
+    for (uint8_t index = 0; index < image->section_count; index++) {
+        uint32_t section_base = image->sections[index].virtual_address;
+        uint32_t section_size = image->sections[index].raw_size;
+        if (section_size == 0) continue;
+        if (rva < section_base) continue;
+        uint32_t inside = rva - section_base;
+        if (inside >= section_size) continue;
+        if (count > section_size - inside) return false;
+        *file_offset = image->sections[index].file_offset + inside;
+        return true;
+    }
+    return false;
+}
 bool pe_parse(const void* blob, size_t blob_size, pe_image_t* image) {
     if (!blob || !image || blob_size < PE_OFFSET_COFF_SIGNATURE + 4) {
         if (image) image->error = "blob too small";
@@ -208,6 +230,153 @@ bool pe_parse(const void* blob, size_t blob_size, pe_image_t* image) {
             image->data_directories[index].size = pe_u32(entry + 4);
         }
     }
+    /* imports: a single-DLL surface (layer 1d) */
+    image->import_rva = 0;
+    image->import_count = 0;
+    image->import_dll[0] = '\0';
+    for (uint32_t index = 0; index < PE_IMPORT_MAX; index++) {
+        image->import_names[index][0] = '\0';
+    }
+    if (image->rva_and_sizes_count > PE_DIR_IMPORT_TABLE &&
+        image->data_directories[PE_DIR_IMPORT_TABLE].size != 0) {
+        uint32_t import_rva =
+            image->data_directories[PE_DIR_IMPORT_TABLE].rva;
+        uint32_t import_size =
+            image->data_directories[PE_DIR_IMPORT_TABLE].size;
+        uint32_t import_file_offset = 0;
+        const uint8_t* descriptor = 0;
+        uint32_t name_rva = 0;
+        uint32_t thunk_rva = 0;
+        uint32_t iat_rva = 0;
+        uint32_t thunk_size = is_plus ? 8 : 4;
+        uint32_t index;
+
+        if (!pe_rva_sourced_raw(image, import_rva, 20, &import_file_offset)) {
+            image->error = "import directory out of range";
+            return false;
+        }
+        if (import_size < 20) {
+            image->error = "import directory truncated";
+            return false;
+        }
+        if (!pe_reader_read(&reader, import_file_offset, 20,
+            &descriptor)) {
+            image->error = "truncated import descriptor";
+            return false;
+        }
+        if (pe_u32(descriptor + 16) == 0) {
+            image->error = "import entry has no IAT";
+            return false;
+        }
+        /* second descriptor present -> multi-DLL: refused at 1d */
+        if (import_size >= 40) {
+            const uint8_t* second = 0;
+            if (!pe_reader_read(&reader, import_file_offset + 20, 20,
+                &second)) {
+                image->error = "truncated second import descriptor";
+                return false;
+            }
+            if (pe_u32(second + 12) != 0 || pe_u32(second + 16) != 0) {
+                image->error = "multiple import DLLs not supported";
+                return false;
+            }
+        }
+        iat_rva = pe_u32(descriptor + 16);
+        name_rva = pe_u32(descriptor + 12);
+        thunk_rva = pe_u32(descriptor);
+        if (thunk_rva == 0) thunk_rva = iat_rva;
+        /* DLL name */
+        {
+            uint32_t dll_file_offset = 0;
+            if (!pe_rva_sourced_raw(image, name_rva, 1, &dll_file_offset)) {
+                image->error = "import DLL name out of range";
+                return false;
+            }
+            for (index = 0; index < sizeof(image->import_dll) - 1;
+                index++) {
+                uint8_t byte = 0;
+                const uint8_t* at = 0;
+                if (!pe_reader_read(&reader, dll_file_offset + index, 1,
+                    &at)) {
+                    image->error = "truncated import DLL name";
+                    return false;
+                }
+                byte = *at;
+                if (byte == 0) break;
+                image->import_dll[index] = (char)(byte >= 'A' &&
+                    byte <= 'Z' ? byte + 32 : byte);
+            }
+            image->import_dll[index] = '\0';
+            if (index == sizeof(image->import_dll) - 1) {
+                image->error = "import DLL name too long";
+                return false;
+            }
+        }
+        image->import_rva = iat_rva;
+        /* function names from the hint/name thunk array */
+        for (uint32_t slot = 0; slot < PE_IMPORT_MAX; slot++) {
+            const uint8_t* thunk = 0;
+            uint32_t hint_rva;
+            uint32_t name_file_offset = 0;
+            uint32_t value;
+            if (thunk_rva + thunk_size >
+                image->size_of_image) {
+                image->error = "import thunk array out of range";
+                return false;
+            }
+            if (!pe_rva_sourced_raw(image, thunk_rva, thunk_size,
+                &name_file_offset)) {
+                image->error = "import thunk array not file-backed";
+                return false;
+            }
+            if (!pe_reader_read(&reader, name_file_offset, thunk_size,
+                &thunk)) {
+                image->error = "truncated import thunks";
+                return false;
+            }
+            value = pe_u32(thunk);
+            if (value == 0) break;
+            if (value & 0x80000000u) {
+                image->error = "import by ordinal not supported";
+                return false;
+            }
+            hint_rva = value;
+            if (!pe_rva_sourced_raw(image, hint_rva + 2, 1,
+                &name_file_offset)) {
+                image->error = "import function name out of range";
+                return false;
+            }
+            for (index = 0; index < sizeof(image->import_names[0]) - 1;
+                index++) {
+                uint8_t byte = 0;
+                const uint8_t* at = 0;
+                if (!pe_reader_read(&reader, name_file_offset + index, 1,
+                    &at)) {
+                    image->error = "truncated import function name";
+                    return false;
+                }
+                byte = *at;
+                if (byte == 0) break;
+                image->import_names[slot][index] = (char)byte;
+            }
+            image->import_names[slot][index] = '\0';
+            if (index == sizeof(image->import_names[0]) - 1) {
+                image->error = "import function name too long";
+                return false;
+            }
+            image->import_count++;
+            thunk_rva += thunk_size;
+        }
+        if (image->import_count >= PE_IMPORT_MAX) {
+            image->error = "too many import functions";
+            return false;
+        }
+        if (image->import_count == 0) {
+            image->error = "empty import table";
+            return false;
+        }
+    }
+
     image->valid = true;
     image->error = 0;
     return true;
@@ -216,25 +385,7 @@ bool pe_parse(const void* blob, size_t blob_size, pe_image_t* image) {
 bool pe_rva_sourced(const pe_image_t* image, uint32_t rva,
     uint32_t count, uint32_t* file_offset) {
     if (!image || !image->valid) return false;
-    if (!file_offset) return false;
-    /* headers region serves RVAs strictly below SizeOfHeaders */
-    if (rva < image->size_of_headers) {
-        if (count > image->size_of_headers - rva) return false;
-        *file_offset = rva;
-        return true;
-    }
-    for (uint8_t index = 0; index < image->section_count; index++) {
-        uint32_t section_base = image->sections[index].virtual_address;
-        uint32_t section_size = image->sections[index].raw_size;
-        if (section_size == 0) continue;
-        if (rva < section_base) continue;
-        uint32_t inside = rva - section_base;
-        if (inside >= section_size) continue;
-        if (count > section_size - inside) return false;
-        *file_offset = image->sections[index].file_offset + inside;
-        return true;
-    }
-    return false;
+    return pe_rva_sourced_raw(image, rva, count, file_offset);
 }
 
 bool pe_image_snapshot(const pe_image_t* image, const uint8_t* blob,

@@ -91,6 +91,19 @@ extern void ring3_syscall_stub(void);
 
 /* Per-arch frame accessors (syscall ABI differs: ebx on i386, rdi on x86-64). */
 #ifdef ROCKOS_ARCH_32
+#define FRAME_WIN32_FN(f) ((uint64_t)(f)->rbx)
+#define FRAME_WIN32_ARG1(f) ((uint64_t)(f)->esi)
+#define FRAME_WIN32_ARG2(f) ((uint64_t)(f)->edx)
+#define FRAME_WIN32_ARG3(f) ((uint64_t)(f)->ecx)
+#define FRAME_WIN32_ARG4(f) ((uint64_t)(f)->edi)
+#else
+#define FRAME_WIN32_FN(f) ((f)->rdi)
+#define FRAME_WIN32_ARG1(f) ((f)->rsi)
+#define FRAME_WIN32_ARG2(f) ((f)->rdx)
+#define FRAME_WIN32_ARG3(f) ((f)->rcx)
+#define FRAME_WIN32_ARG4(f) ((f)->r8)
+#endif
+#ifdef ROCKOS_ARCH_32
 #define FRAME_SYSCALL_ARG(f) ((uint64_t)(f)->rbx)
 /* For ring 0 interrupts the CPU did not push esp: it is just past eflags. */
 #define FRAME_STACK_POINTER(f) \
@@ -315,8 +328,15 @@ void interrupt_dispatch(interrupt_frame_t* frame) {
 
     if (frame->vector == RING3_SYSCALL_VECTOR) {
         if ((frame->cs & 3) == 3) {
-            frame->rax = ring3_syscall_dispatch(frame->rax,
-                FRAME_SYSCALL_ARG(frame));
+            if (frame->rax == RING3_SYSCALL_WIN32) {
+                frame->rax = ring3_win32_dispatch(
+                    FRAME_WIN32_FN(frame), FRAME_WIN32_ARG1(frame),
+                    FRAME_WIN32_ARG2(frame), FRAME_WIN32_ARG3(frame),
+                    FRAME_WIN32_ARG4(frame));
+            } else {
+                frame->rax = ring3_syscall_dispatch(frame->rax,
+                    FRAME_SYSCALL_ARG(frame));
+            }
             return;
         }
         exception_panic(frame);
