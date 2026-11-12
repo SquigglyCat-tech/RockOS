@@ -29,6 +29,7 @@
 #define PE_STRING_MAX 9
 
 #define PE_DATA_DIRECTORY_MAX 16
+#define PE_IMPORT_MAX 16
 #define PE_DIR_IMPORT_TABLE 1
 #define PE_DIR_RELOCATION_TABLE 5
 
@@ -69,6 +70,13 @@ typedef struct {
     } sections[PE_SECTION_MAX];
     /* Entry point for ring-3 dispatch; zero for EXE-only stubs. */
     uint64_t entry_point_rva;
+    /* Imports (layer 1d): a single-DLL surface is supported; the
+     * loader records the FirstThunk base (the IAT) and the imported
+     * function names in arrival order. */
+    uint32_t import_rva;
+    uint32_t import_count;
+    char import_dll[16];
+    char import_names[PE_IMPORT_MAX][24];
     /* Optional-header data directories (fewer than 16 stored). */
     uint32_t rva_and_sizes_count;
     struct {
@@ -97,6 +105,13 @@ bool pe_rva_sourced(const pe_image_t* image, uint32_t rva, uint32_t count,
  * out; zero-fills anything unmapped. Returns false on bounds errors. */
 bool pe_image_snapshot(const pe_image_t* image, const uint8_t* blob,
     size_t blob_size, uint8_t* out, size_t out_size);
+
+/* Build the runtime import table: patch the FirstThunk entries (the
+ * IAT) in the snapshot with stub RVAs appended after SizeOfImage.
+ * Stub area starts at image->size_of_image, 16-byte aligned per
+ * entry; false on any unknown DLL or function name. */
+bool pe_run_prepare_imports(const pe_image_t* image, uint8_t* snapshot,
+    size_t snapshot_size);
 
 /* Apply base relocations from the relocation data directory into the
  * snapshot buffer. delta = load_base - image_base. Handles types

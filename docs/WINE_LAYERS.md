@@ -98,3 +98,40 @@ imports (kernel32 still next). New `pe.c` pieces, all host-verified:
   fixed to 0x60000110, one HIGHLOW entry block at RVA 0x1080.
 - `tests/pe_run_host_test.c` now covers parse + envelope (1c form) +
   snapshot + rva lookup + relocation (all PASS: 27 checks).
+
+## Layer 1d addition: a first kernel32 import surface
+
+The envelope now admits PE images with an import table, subject to a
+single-DLL surface, and the loader replaces real imports with our own
+int 0x80 trampolines - .exe bytes run against RockOS's kernel32:
+
+- `pe_image_t` carries the parsed import surface: `import_rva` (the
+  FirstThunk/IAT base), `import_count`, lowercased `import_dll`
+  (16 bytes max), and `import_names` (up to `PE_IMPORT_MAX` = 16, 24
+  bytes each). Parsing walks the data-directory-1 descriptor, refuses
+  ordinals, second DLLs, and names that do not resolve to file-backed
+  bytes (mid-parse uses the new internal `pe_rva_sourced_raw`; the
+  public `pe_rva_sourced` still requires a fully valid image).
+- Supported DLL: `kernel32.dll` only (case-insensitive). Supported
+  functions (ids 0..3): ExitProcess, GetStdHandle, WriteFile,
+  WriteConsoleA. Anything else is refused at envelope time.
+- `pe_run_prepare_imports` appends one trampoline per import into the
+  extra page after SizeOfImage (16-byte aligned) and patches each IAT
+  entry in the snapshot with the stub's RVA. Stubs enter
+  `RING3_SYSCALL_WIN32` (int 0x80, eax=7):
+  - i386: stdcall args [esp+4..16] -> ESI/EDX/ECX/EDI, fn id in EBX,
+    `ret imm16` pops the args.
+  - AMD64: Win64 RCX,RDX,R8,R9 shuffled to RSI,RDX,RCX,R8, fn id in
+    EDI.
+- `ring3_win32_dispatch` serves them: ExitProcess reuses the exit
+  cleanup; GetStdHandle answers 1 (stdout); WriteFile/WriteConsoleA
+  print up to 256 validated user bytes and return the count (the
+  lpNumberOfBytesWritten out-pointer is not written in 1d).
+- The runtime import dispatch path is wired in `interrupt_dispatch`:
+  rax == 7 with user CS routes fn + four frame arguments.
+- New fixture `tools/make_pe_import32.py` emits
+  `src/kernel/pe_import32.h`: PIC PE32 code that calls WriteFile via
+  its IAT and ExitProcess, kernel32.dll with hint/name thunks.
+- `tests/pe_run_host_test.c` covers import parsing (names, IAT RVA,
+  case-folded DLL), stub bytes for both functions, IAT patching, and
+  envelope/prepare refusals (unknown DLL, unknown fn, oversize list).

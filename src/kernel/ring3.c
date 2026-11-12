@@ -583,6 +583,53 @@ static void ring3_memory_cleanup(void) {
     ring3_mmap_next_address = RING3_MEMORY_MMAP_BASE;
 }
 
+/* Win32 surface: bytes written to the console, capped so a bad user
+ * pointer cannot walk far before we validate the span. */
+#define RING3_WIN32_WRITE_MAX 256
+
+uint64_t ring3_win32_dispatch(uint64_t fn, uint64_t arg1, uint64_t arg2,
+    uint64_t arg3, uint64_t arg4) {
+    process_t* process = process_get_current();
+
+    if (!process || process->address_space != active_address_space ||
+        !active_address_space || !active_code_page || !active_stack_page) {
+        display_puts("[-] Ring 3 win32 call from invalid process state; halting.\n");
+        for (;;) asm volatile ("cli; hlt" : : : "memory");
+    }
+
+    if (fn == RING3_WIN32_EXITPROCESS) {
+        (void)arg1; (void)arg2; (void)arg3; (void)arg4;
+        return ring3_syscall_dispatch(RING3_SYSCALL_EXIT, 0);
+    }
+    if (fn == RING3_WIN32_GETSTDHANDLE) {
+        (void)arg2; (void)arg3; (void)arg4;
+        /* stdout is the only handle (1); stderr would be 2 */
+        return arg1 == (uint64_t)-11 || arg1 == 1 ? 1 : 0;
+    }
+    if (fn == RING3_WIN32_WRITEFILE || fn == RING3_WIN32_WRITECONSOLEA) {
+        const char* bytes = (const char*)(uintptr_t)arg2;
+        uint64_t len = arg3;
+        uint64_t index;
+        (void)arg1; (void)arg4;  /* handle + lpNumberOfBytesWritten out */
+        if (len > RING3_WIN32_WRITE_MAX) return UINT64_MAX;
+        /* user-span sanity: buffer must sit in the mapped user range */
+        if (arg2 == 0 || arg2 < 0x40000000 ||
+            arg2 + len > 0x80000000) {
+            return UINT64_MAX;
+        }
+        paging_restore_kernel_address_space();
+        for (index = 0; index < len; index++) {
+            char c = bytes[index];
+            if (c != '\n' && (c < 0x20 || c > 0x7E)) continue;
+            display_putchar(c);
+        }
+        paging_load_address_space(active_address_space);
+        return len;
+    }
+    display_puts("[-] Ring 3 win32 call used an unknown function.\n");
+    return UINT64_MAX;
+}
+
 uint64_t ring3_syscall_dispatch(uint64_t syscall_number, uint64_t argument) {
     if (syscall_number == RING3_SYSCALL_PUTCHAR) {
         process_t* process = process_get_current();
