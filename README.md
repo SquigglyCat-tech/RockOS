@@ -47,8 +47,6 @@ export PATH="/c/opt/x86_64-elf-tools/bin:$PATH"
 make run
 ```
 
-### Requirements
-
 ## Requirements (VirtualBox)
 
 - Type: Other, Version: Other/Unknown (64-bit)
