@@ -1,4 +1,5 @@
 #include "storage.h"
+#include "live.h"
 
 #include "io.h"
 #include "pci.h"
@@ -81,6 +82,8 @@ static uint8_t test_read_buffer[BLOCK_SECTOR_SIZE];
 static size_t ata_device_count;
 static bool ata_busy;
 static block_result_t initialization_result = BLOCK_RESULT_NOT_INITIALIZED;
+static bool live_mode;
+static const block_device_t* live_device;
 
 static void ata_delay_400ns(uint8_t channel) {
     uint16_t ctrl = ata_channels[channel & 1u].ctrl;
@@ -311,7 +314,15 @@ static block_result_t ata_identify(ata_drive_t* drive, uint8_t channel,
     return BLOCK_RESULT_OK;
 }
 
+block_result_t storage_init_live(void) {
+    live_mode = true;
+    live_device = live_disk_init();
+    initialization_result = live_device ? BLOCK_RESULT_OK : BLOCK_RESULT_NO_DEVICE;
+    return initialization_result;
+}
+
 block_result_t storage_init(void) {
+    if (live_mode) return initialization_result;
     ata_busy = false;
     ata_device_count = 0;
     for (size_t i = 0; i < 4; i++) {
@@ -362,14 +373,17 @@ block_result_t storage_initialization_result(void) {
 }
 
 const block_device_t* storage_get_device(void) {
+    if (live_mode) return live_device;
     return ata_drives[0].ready ? &ata_drives[0].block : NULL;
 }
 
 size_t storage_get_device_count(void) {
+    if (live_mode) return live_device ? 1 : 0;
     return ata_device_count;
 }
 
 const block_device_t* storage_get_device_at(size_t index) {
+    if (live_mode) return index == 0 ? live_device : NULL;
     for (size_t drive_index = 0; drive_index < 4; drive_index++) {
         if (!ata_drives[drive_index].ready) continue;
         if (index == 0) return &ata_drives[drive_index].block;
