@@ -47,6 +47,23 @@ export PATH="/c/opt/x86_64-elf-tools/bin:$PATH"
 make run
 ```
 
+### Requirements
+
+## Requirements (VirtualBox)
+
+- Type: Other, Version: Other/Unknown (64-bit)
+- CPU: VT-x/AMD-V enabled (Hyper-V/WSL2 can interfere on Windows)
+- RAM: [minimum TBD, test 64 / 128 / 256 MB]
+- Firmware: [BIOS or EFI, test both]
+- Disk controller: IDE (PIIX3/PIIX4). SATA/NVMe NOT supported yet
+- Optional: COM1 -> Raw File for serial debug logs
+
+## Troubleshooting
+
+- Guru Meditation: check the VM is set to 64-bit and VT-x is on
+- Boots straight to the shell: the disk probably isn't on IDE
+  (serial log will show "[ata] probe ... none")
+  
 ### Virtual machine storage
 
 The V.1 installer image is 16 MiB, so the install-target disk must be at least
