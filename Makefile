@@ -45,6 +45,7 @@ C_SOURCES = src/kernel/kernel.c \
 			src/kernel/pmm.c \
 			src/kernel/pci.c \
 			src/kernel/block.c \
+			src/kernel/live.c \
 			src/kernel/filesystem.c \
 			src/drivers/ata_pio.c \
 			src/kernel/shell.c \
@@ -215,6 +216,11 @@ run: $(ISO_IMAGE) $(DATA_DISK) $(INSTALL_DISK)
 		-drive file=$(ISO_IMAGE),format=raw,media=cdrom,if=none,id=installcd,readonly=on \
 		-device ide-cd,drive=installcd,bus=ide.1,unit=0,bootindex=3
 
+# Boot the default live entry without attaching any host disk images.
+run-live: $(ISO_IMAGE)
+	qemu-system-x86_64 -machine pc -m 256 -serial stdio \
+		-cdrom $(ISO_IMAGE) -boot order=d
+
 run-installed: $(INSTALL_DISK) $(DATA_DISK)
 	qemu-system-x86_64 -machine pc -boot order=c \
 		-audiodev driver=dsound,id=audio0 \
@@ -225,4 +231,4 @@ run-installed: $(INSTALL_DISK) $(DATA_DISK)
 clean:
 	rm -f $(OBJS64) $(OBJS32) $(KERNEL64_BIN) $(KERNEL32_BIN) $(KERNEL_BIN) $(ISO_IMAGE) $(INSTALL_MODULE) $(ISO_DIR)/EFI/BOOT/BOOTX64.EFI $(INSTALL_IMAGE) $(UI_ASSETS)
 
-.PHONY: all run run-installed clean kernel32
+.PHONY: all run run-live run-installed clean kernel32

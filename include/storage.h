@@ -10,6 +10,8 @@
 #define STORAGE_TEST_RESERVED_SECTORS 1ULL
 
 block_result_t storage_init(void);
+/* Live mode never probes or exposes physical ATA devices, even on failure. */
+block_result_t storage_init_live(void);
 block_result_t storage_initialization_result(void);
 const block_device_t* storage_get_device(void);
 size_t storage_get_device_count(void);

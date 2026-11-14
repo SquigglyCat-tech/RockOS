@@ -13,6 +13,8 @@
 #include "pmm.h"
 #include "pci.h"
 #include "storage.h"
+#include "live.h"
+#include "multiboot1.h"
 #include "filesystem.h"
 #include "shell.h"
 #include "audio.h"
@@ -356,8 +358,17 @@ void kernel_main(uint32_t boot_magic, uintptr_t boot_info_address) {
         audio_play_error_sound();
     }
 
-    display_puts("[+] Initializing ATA PIO block storage...\n");
-    block_result_t storage_result = storage_init();
+    const multiboot1_info_t* boot_info =
+        (const multiboot1_info_t*)boot_info_address;
+    bool live = (boot_info->flags & MULTIBOOT1_INFO_CMDLINE) &&
+        boot_info->cmdline &&
+        live_cmdline_enabled((const char*)(uintptr_t)boot_info->cmdline);
+    display_puts(live
+        ? "[+] Live session: volatile RAM storage, physical disks disabled.\n"
+        : "[+] Initializing ATA PIO block storage...\n");
+    serial_write_string(live ? "[boot] live mode: physical disks disabled\n"
+        : "[boot] normal storage mode\n");
+    block_result_t storage_result = live ? storage_init_live() : storage_init();
     if (storage_result == BLOCK_RESULT_OK) {
         const block_device_t* device = storage_get_device();
         display_puts("[+] Storage ready: ");

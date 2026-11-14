@@ -47,6 +47,33 @@ export PATH="/c/opt/x86_64-elf-tools/bin:$PATH"
 make run
 ```
 
+### Try without installing
+
+Run `make run-live`, or boot the ISO and choose a **Try RockOS live** entry.
+The default is 32-bit; choose the 64-bit live entry on a suitable CPU. Live
+mode starts the shell; press `Ctrl+Alt+D` for the desktop.
+
+Live mode creates a 16 MiB RAM-backed RockFS. Files and changes disappear on
+shutdown or reboot. It neither probes nor exposes ATA disks to RockOS,
+including to the installer command. If RAM allocation fails, storage remains
+unavailable rather than falling back to a physical disk. This is experimental
+software: use a VM and keep backups, rather than relying on it with valuable
+hardware or data. The ISO still contains the installer; explicitly choose an
+installer menu entry to install.
+
+To check the live implementation after building the ISO:
+
+```sh
+cc -Iinclude tests/live_host_test.c src/kernel/live.c src/kernel/block.c -o /tmp/rockos-live-test
+/tmp/rockos-live-test
+python3 tests/live_qemu_test.py
+```
+
+The host test covers the boot token, RAM disk I/O and bounds. The QEMU smoke
+test boots the default live entry with a writable blank IDE disk and checks
+that its hash remains unchanged through shell startup. For an interactive
+check, create a file in the live shell, reboot, and confirm it is gone.
+
 ## Requirements (VirtualBox)
 
 - Type: Other, Version: Other/Unknown (64-bit)
@@ -72,9 +99,11 @@ build and for any disk images you keep. The installer overwrites its selected
 target disk; use a disposable virtual disk.
 
 `make run` gives the dedicated install-target disk boot priority, followed by
-the data disk and installer CD. After installation completes, restart the VM
-to boot the installed system. To boot it directly in QEMU, close the VM and
-run `make run-installed`.
+the data disk and CD. When booting the CD, select an installer menu entry;
+the default is the live session. Installer/normal boots may write to the
+primary-master data disk during startup even before installation. After
+installation completes, restart the VM to boot the installed system. To boot
+it directly in QEMU, close the VM and run `make run-installed`.
 
 The installer prefers the ATA primary-slave disk as its target, preserving
 the primary-master data disk. If no slave disk is detected, it can use the
