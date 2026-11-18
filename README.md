@@ -1,118 +1,129 @@
 # RockOS
 
-RockOS is an experimental 64-bit x86 hobby operating system built from scratch
-in C and x86-64 assembly. Version 1 is an early, QEMU-focused milestone with a
-graphical installer and a small interactive kernel environment.
+RockOS is an experimental 64-bit x86 hobby operating system built completely from scratch in C and x86-64 assembly. Version 1 is an early milestone featuring a graphical installer, a Limine bootloader setup, and an interactive desktop environment tailored to run within **Oracle VirtualBox**.
+
+---
 
 ## Highlights
 
-- Limine BIOS and UEFI boot support
-- Boot menu video modes: 1024x768 (default), 1920x1080, and 3840x2160 (4K)
-- 64-bit kernel with interrupt, paging, task, and TSS foundations
-- Framebuffer UI and graphical installation flow
-- Desktop with a start menu and draggable About/shortcuts windows
-- PS/2 keyboard and mouse input
-- ATA PIO storage and a basic filesystem
-- AC'97 audio experiments
-- Isolated Ring 3 proof of concept
+* **Boot Support:** Limine BIOS and UEFI boot integration.
+* **Video Modes:** Boot menu resolutions include 1024x768 (default), 1920x1080, and 3840x2160 (4K).
+* **Kernel Architecture:** 64-bit, 32-bit, and 16-bit kernels featuring interrupt, paging, task, and TSS foundations.
+* **Graphical Interface:** Framebuffer-driven UI with a complete graphical installation flow.
+* **Desktop Environment:** Includes a start menu, draggable windows, and shortcuts.
+* **Peripherals & Drivers:** PS/2 keyboard/mouse input, ATA PIO storage, a basic filesystem, and Intel AC'97 audio support.
+* **Security:** Isolated Ring 3 proof-of-concept architecture.
 
-RockOS is work in progress and is currently intended for QEMU. Do not use the
-installer on a physical disk. Expect bugs (If you need them fixed just dm me @spaminhaler_30401 on Discord)
+> **Warning:** RockOS is a work in progress intended strictly for virtual machines like Oracle VirtualBox. **Do not** run the installer on a physical hard drive. 
 
-## System requirements
+>
+> *Encountered bugs? Reach out on Discord via `@spaminhaler_30401`.*
 
-| | Minimum | Recommended |
-|---|---|---|
-| RAM | 3 GB | 13 GB |
-| Storage | 40 MB virtual disk (16 MiB install target + ISO) | 128 MB mainline disk |
+---
 
-3 GB is the minimal requirement and 13 GB is the recommended amount for best
-performance and preparation for Wine being ported to RockOS. The kernel also
-needs the machine-readable framebuffer that Limine provides plus a 64-bit
-x86 CPU (or an x86-target emulator such as QEMU). Fine on 4 GB machines when
-the framebuffer resolution is low; 13 GB leaves room for large Wine prefix
-disk images and compile-time assets.
+## System Requirements
 
-## Build and run
+| Resource | Minimum | Recommended | Notes |
 
-The build uses GNU Make, an `x86_64-elf` GCC/binutils cross-toolchain, Python 3,
-PowerShell, xorriso, Limine boot files, and QEMU. The Makefile expects the
-cross-toolchain and Limine files in the paths configured near its top; override
-`PATH`, `LIMINE_DATA_DIR`, or `LIMINE_TOOL` for your environment as needed.
+| :--- | :--- | :--- | :--- |
 
-From an MSYS2 UCRT64 shell in the cloned RockOS directory:
+| **RAM** | 3 GB | 13 GB | 3 GB is the baseline; 13 GB provides ample headroom for high-resolution buffers and future Wine porting workloads. |
+
+| **Storage** | 30 MB virtual disk | 128 MB+ virtual disk | Accommodates the 26 MiB install target and ISO. |
+
+The kernel requires a 64-bit x86 CPU and a machine-readable framebuffer provided by Limine. 
+
+
+
+---
+
+
+
+## Building the ISO
+
+To compile RockOS, whether for making your own distro or branch, you need a development environment equipped with GNU Make, an `x86_64-elf` GCC/binutils cross-toolchain, Python 3, xorriso, and Limine boot files.
+To build the bootable ISO without launching external emulators:
+
+
 
 ```sh
-export PATH="/c/opt/x86_64-elf-tools/bin:$PATH"
-make run
+
+make
+
+```
+To disable the optional boot test tone during compilation:
+
+
+
+```sh
+
+make AUDIO_BOOT_TEST_TONE=0
+
 ```
 
-## Requirements (VirtualBox)
 
-- Type: Other, Version: Other/Unknown (64-bit)
-- CPU: VT-x/AMD-V enabled (Hyper-V/WSL2 can interfere on Windows)
-- RAM: [minimum TBD, test 64 / 128 / 256 MB]
-- Firmware: [BIOS or EFI, test both]
-- Disk controller: IDE (PIIX3/PIIX4). SATA/NVMe NOT supported yet
-- Optional: COM1 -> Raw File for serial debug logs
+
+---
+
+
+
+## Oracle VirtualBox Setup Guide
+
+Because RockOS currently relies on legacy ATA controllers, configure your VirtualBox virtual machine according to the following specifications:
+
+### 1. VM Configuration Settings
+
+* **Name / OS Type:** Type: `Other`, Version: `Other/Unknown (64-bit)`
+* **Processor / CPU:** Enable **VT-x/AMD-V** hardware virtualization. *(Note: On Windows hosts, Hyper-V or WSL2 can sometimes interfere with nested virtualization).*
+* **Memory (RAM):** Set to at least 3 GB (or lower e.g., 512 MB – 1 GB for basic testing).
+* **Firmware:** Compatible with both BIOS and EFI (test both if needed).
+* **Audio:** Enable audio output (emulates an Intel AC'97 device).
+
+
+
+### 2. Storage Configuration (Crucial)
+
+* **Disk Controller:** Must use **IDE (PIIX3 / PIIX4)**. *SATA and NVMe controllers are not supported in V.1.*
+
+* **Virtual Disks:** 
+
+  * The installer image requires an install-target disk of at least 16 MiB (the default build generates a 64 MiB install disk + a separate 16 MiB data disk).
+  * Attach the generated RockOS ISO file to the virtual optical drive.
+  * Set boot priority so the VM boots from the optical drive or install target.
+
+---
+
+## Using RockOS
+
+
+
+Once booted into the desktop environment, use the following shortcuts and navigation tips:
+
+* **Desktop Toggle:** Press `Ctrl + Alt + D` to open/close the desktop interface (`Ctrl + Alt + Q` to exit).
+* **Start Menu / Icons:** Access the File Manager, Terminal, System Info, and About windows.
+* **Window Management:** Title bar buttons minimize, maximize, and close windows. 
+  * `Tab` cycles through active windows.
+  * `Esc` closes active menus, windows, or the desktop overlay.
+  * `F1` displays desktop help.
+  * `Ctrl + Alt + M` minimizes the currently focused window.
+
+* **Terminal & Navigation:** 
+
+  * Terminal retains Up/Down command history.
+  * File Manager supports Arrow keys, `PgUp`/`PgDn`, `Home`/`End`, `Enter` to open, and `Backspace` to go up a directory.
+
+* **Audio Check:** If audio playback is missing, verify that VirtualBox audio is enabled and use the RockOS shell command `audio` to inspect AC'97 initialization and DMA status.
+---
 
 ## Troubleshooting
 
-- Guru Meditation: check the VM is set to 64-bit and VT-x is on
-- Boots straight to the shell: the disk probably isn't on IDE
-  (serial log will show "[ata] probe ... none")
-  
-### Virtual machine storage
+* **Guru Meditation Error on Boot:** Verify that the VM is configured as **64-bit** and that **VT-x/AMD-V** is enabled in your CPU settings.
+* **Boots Straight to Shell:** The virtual disk is likely attached to a SATA/NVMe controller instead of **IDE**. Check serial debug logs (`COM1 -> Raw File`) for probe errors like `[ata] probe ... none`.
+* **Installer Disk Overwrites:** The installer targets the ATA primary-slave disk by default to preserve the primary-master data disk. If no slave disk is present, it will prompt to use the primary-master disk (which will be formatted).
 
-The V.1 installer image is 16 MiB, so the install-target disk must be at least
-16 MiB. The default `make run` configuration creates a 64 MiB install-target
-disk and a separate 16 MiB data disk (80 MiB total virtual-disk capacity),
-in addition to the roughly 21 MB boot ISO. Allow extra host storage for the
-build and for any disk images you keep. The installer overwrites its selected
-target disk; use a disposable virtual disk.
+---
 
-`make run` gives the dedicated install-target disk boot priority, followed by
-the data disk and installer CD. After installation completes, restart the VM
-to boot the installed system. To boot it directly in QEMU, close the VM and
-run `make run-installed`.
+## Version History & Assets
 
-The installer prefers the ATA primary-slave disk as its target, preserving
-the primary-master data disk. If no slave disk is detected, it can use the
-primary-master disk; the confirmation page warns that this erases that disk.
-Only legacy IDE/ATA disks are currently supported by the installer.
-
-Audio uses an emulated Intel AC'97 device. If playback is unavailable, check
-that the virtual machine has audio output enabled and use the RockOS `audio`
-shell command to inspect AC'97 initialization and DMA playback status.
-
-Press `Ctrl+Alt+D` to open or close the desktop (`Ctrl+Alt+Q` also exits).
-Its start menu and desktop icons open File Manager, Terminal, System Info,
-and About. Title buttons minimize / maximize / close; `Tab` cycles windows,
-`Esc` closes menu/window/desktop, `F1` shows desktop help, and `Ctrl+Alt+M`
-minimizes the focused window. Terminal keeps Up/Down command history; File
-Manager supports Up/Down/PgUp/PgDn/Home/End, Enter to open, Backspace for up.
-
-Build the ISO without launching QEMU:
-
-```sh
-make
-```
-
-To disable the optional boot test tone:
-
-```sh
-make AUDIO_BOOT_TEST_TONE=0
-```
-
-## Version history
-
-The `v1.0` tag marks the first public RockOS milestone. Ongoing work belongs on
-the `v2.0-dev` branch; keep `main` as the stable V.1 line.
-
-## Third-party assets
-
-The bundled Selawik font is distributed under the SIL Open Font License 1.1;
-see [`assets/selawik/OFL.txt`](assets/selawik/OFL.txt). Its generated glyph
-atlas is built from the bundled font by `scripts/generate_ui_assets.ps1`.
-
-No separate license has been selected for the RockOS project source yet.
+* **v1.0:** Marks the first public milestone of RockOS. `main` remains the stable V.1 branch, while ongoing development takes place on `v2.0-dev`.
+* **Third-Party Assets:** The bundled Selawik font is distributed under the terms of the SIL Open Font License 1.1.
