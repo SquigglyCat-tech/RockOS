@@ -19,29 +19,20 @@ static uint8_t mouse_packet[3];
 static bool mouse_wheel_mode = false;
 
 /* ---- Pointer speed ------------------------------------------------------
- * MOUSE_GAIN_PERCENT: 100 = raw PS/2 counts, 150 = 1.5x faster, etc.
- * Acceleration: quick movements get extra gain so you can sweep across a
- * 1024x768 screen without dragging the mouse across the whole desk.
- * Tune these three numbers to taste. */
+ * Use a constant gain rather than packet-size acceleration. Threshold-based
+ * acceleration makes pointer speed jump abruptly between small and large
+ * PS/2 packets, which feels uneven during ordinary movement.
+ * 125 = a modest 1.25x speed increase without acceleration. */
 #ifndef MOUSE_GAIN_PERCENT
-#define MOUSE_GAIN_PERCENT 150
+#define MOUSE_GAIN_PERCENT 125
 #endif
-#define MOUSE_ACCEL_MEDIUM_COUNTS 5   /* |delta| >= this: 1.5x extra */
-#define MOUSE_ACCEL_FAST_COUNTS 12    /* |delta| >= this: 2x extra   */
 
 /* Sub-pixel leftovers so slow movement is not lost to rounding. */
 static int32_t mouse_x_remainder = 0;
 static int32_t mouse_y_remainder = 0;
 
 static int32_t mouse_scale(int32_t delta, int32_t* remainder) {
-    int32_t magnitude = delta < 0 ? -delta : delta;
-    int32_t gain = MOUSE_GAIN_PERCENT;
-    if (magnitude >= MOUSE_ACCEL_FAST_COUNTS) {
-        gain = gain * 2;
-    } else if (magnitude >= MOUSE_ACCEL_MEDIUM_COUNTS) {
-        gain = (gain * 3) / 2;
-    }
-    int32_t scaled = delta * gain + *remainder;
+    int32_t scaled = delta * MOUSE_GAIN_PERCENT + *remainder;
     int32_t step = scaled / 100;
     *remainder = scaled - step * 100;
     return step;
